@@ -2731,15 +2731,20 @@ function exportBloqEmail(){
 
 function renderDashboard(c){
   let h='<div class="dash-grid">';
+  // ── Paletas/bultos REALES asignados de demanda (mismo criterio que la Ruta y el resumen ROP) ──
+  // NO se usa tPal/tB (déficit teórico, sin tope de stock ni consolidación → número inflado).
+  const _demR=DATA.rutaDemanda||[];
+  const _palReal=_demR.reduce((a,r)=>a+(r.tkPal||0),0);
+  const _bulReal=_demR.reduce((a,r)=>a+(r.tkB||0),0);
   // Big numbers
   h+='<div class="dash-card" style="border-color:#001E62"><h3 style="color:#001E62;border-color:#418FDE">📦 TAREAS DEL DÍA</h3>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">';
-  h+='<div style="text-align:center;padding:16px;background:linear-gradient(135deg,#001E62 0%,#418FDE 100%);border-radius:10px;color:#fff"><div style="font-size:11px;opacity:.8">MOVIMIENTOS</div><div style="font-size:32px;font-weight:900">'+DATA.tMov+'</div></div>';
-  h+='<div style="text-align:center;padding:16px;background:linear-gradient(135deg,#2e7d32,#66bb6a);border-radius:10px;color:#fff"><div style="font-size:11px;opacity:.8">PALETAS</div><div style="font-size:32px;font-weight:900">'+fN(DATA.tPal)+'</div></div>';
+  h+='<div style="text-align:center;padding:16px;background:linear-gradient(135deg,#001E62 0%,#418FDE 100%);border-radius:10px;color:#fff"><div style="font-size:11px;opacity:.8">MOVIMIENTOS</div><div style="font-size:32px;font-weight:900">'+DATA.tMov+'</div><div style="font-size:9px;opacity:.75">tareas de demanda</div></div>';
+  h+='<div style="text-align:center;padding:16px;background:linear-gradient(135deg,#2e7d32,#66bb6a);border-radius:10px;color:#fff"><div style="font-size:11px;opacity:.8">PALETAS</div><div style="font-size:32px;font-weight:900">'+fN(_palReal)+'</div><div style="font-size:9px;opacity:.75">asignadas (demanda)</div></div>';
   h+='</div>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
   h+='<div class="dash-kpi"><span>Items con déficit</span><b style="color:#001E62">'+DATA.tI+'</b></div>';
-  h+='<div class="dash-kpi"><span>Total Bultos</span><b style="color:#E65100">'+fN(DATA.tB)+'</b></div>';
+  h+='<div class="dash-kpi"><span>Bultos demanda</span><b style="color:#E65100">'+fN(_bulReal)+'</b></div>';
   h+='</div>';
 
   // ── Desglose Demanda vs ROP (para balancear carga según personal) ──
