@@ -2926,7 +2926,7 @@ function refrescarAvisoSesion(){
   const ex=arr.find(x=>x.fecha===fecha&&x.turno===SES_TURNO);
   const par=arr.find(x=>x.fecha===fecha&&x.turno!==SES_TURNO);
   let msg='';
-  if(ex)msg='<span style="color:#E65100">⚠ Ya existe un archivo de <b>'+turnoLabel(SES_TURNO)+'</b> para el '+fFechaES(fecha)+' ('+ex.kpi.tareas+' tareas, '+fHora(ex.creado)+'). Al ejecutar se pedirá confirmación para reemplazarlo.</span>';
+  if(ex)msg='<span style="color:#E65100">⚠ Ya existe un archivo de <b>'+turnoLabel(SES_TURNO)+'</b> para el '+fFechaES(fecha)+' ('+ex.kpi.tareas+' tareas, '+fHora(ex.creado)+'). Al ejecutar se actualizará automáticamente.</span>';
   else if(par)msg='<span style="color:#2e7d32">✓ Ya hay '+turnoLabel(par.turno)+' archivado para el '+fFechaES(fecha)+' ('+par.kpi.tareas+' tareas). Al guardar esta tanda podrá comparar el avance.</span>';
   else msg='<span style="color:#666">Primer archivo del '+fFechaES(fecha)+'.</span>';
   av.innerHTML=msg;
@@ -3004,7 +3004,8 @@ function histSaveSnapshot(silent){
   if(!DATA.sesion)capturarSesion();
   const arr=histLoad();
   const ix=arr.findIndex(x=>x.fecha===DATA.sesion.fecha&&x.turno===DATA.sesion.turno);
-  if(ix>=0){
+  // El auto-guardado (silent) reemplaza sin preguntar; solo el guardado MANUAL confirma.
+  if(ix>=0&&!silent){
     const prev=arr[ix];
     const ok=confirm('Ya existe un archivo de '+turnoLabel(DATA.sesion.turno)+' para el '+fFechaES(DATA.sesion.fecha)+
       '\n('+prev.kpi.tareas+' tareas, guardado '+fHora(prev.creado)+').\n\n¿Reemplazarlo con la ruta actual ('+rows.length+' tareas)?');
