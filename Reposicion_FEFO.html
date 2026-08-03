@@ -3906,6 +3906,16 @@ async function repoApplyManifest(man){
   if(!man||!man.files||!man.files.length)return false;
   if(DATA._applying)return false;
   if(DATA._loadedTs&&DATA._loadedTs===man.publishedTs)return false;   // ya cargado
+  // CANDADO POR FECHA: solo cargar automáticamente las tareas de HOY.
+  // Si lo último publicado es de un día anterior, NO mostrar nada (portada);
+  // para ver días previos el usuario entra a la pestaña 🗂️ Histórico.
+  const hoy=todayISO();
+  const fechaMan=(man.sesion&&man.sesion.fecha)||null;
+  if(fechaMan!==hoy){
+    DATA._loadedTs=man.publishedTs;   // marcar como visto para no reintentar
+    repoBanner('🌙 Las tareas de HOY ('+fFechaES(hoy)+') aún no se han generado. Aparecerán aquí solas cuando el equipo las publique. Para días anteriores, entra a 🗂️ Histórico.','wait');
+    return false;
+  }
   DATA._applying=true;
   try{
     repoBanner('⬇ Cargando tareas sincronizadas del equipo…','load');
