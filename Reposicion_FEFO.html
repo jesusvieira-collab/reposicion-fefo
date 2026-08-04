@@ -1049,6 +1049,11 @@ function buildTabs(){
     b.textContent=t.label;b.onclick=()=>{currentTab=t.id;buildTabs();renderTab();};bar.appendChild(b);
   });
   const sp=document.createElement('div');sp.style.flex='1';bar.appendChild(sp);
+  // Botón para GENERAR una tanda nueva (p.ej. RECHEQUEO) sin que la nube te devuelva al dashboard
+  if(!DATA.histOnly){
+    const nt=document.createElement('button');nt.className='tab';nt.style.background='#E65100';nt.style.color='#fff';nt.style.fontWeight='800';
+    nt.textContent='➕ Nueva tanda / Rechequeo';nt.onclick=nuevaTanda;bar.appendChild(nt);
+  }
   const rst=document.createElement('button');rst.className='tab red';rst.textContent=DATA.histOnly?'← Volver':'Reiniciar';
   rst.onclick=()=>{location.reload();};bar.appendChild(rst);
   if(currentTab!=='dashboard'&&currentTab!=='historico'){
@@ -3910,6 +3915,7 @@ async function repoPublish(){
 async function repoApplyManifest(man){
   if(!man||!man.files||!man.files.length)return false;
   if(DATA._applying)return false;
+  if(DATA._suppressAutoLoad)return false;   // el usuario está preparando una tanda nueva → NO secuestrar al dashboard
   if(DATA._loadedTs&&DATA._loadedTs===man.publishedTs)return false;   // ya cargado
   // CANDADO POR FECHA: solo cargar automáticamente las tareas de HOY.
   // Si lo último publicado es de un día anterior, NO mostrar nada (portada);
@@ -3944,6 +3950,30 @@ async function repoApplyManifest(man){
     return true;
   }catch(e){console.warn('repoApply',e);DATA._fromSync=false;repoBanner('⚠ Error al cargar sincronizadas: '+e.message,'err');return false;}
   finally{DATA._applying=false;}
+}
+
+/* ── Preparar una TANDA NUEVA (p. ej. RECHEQUEO) ─────────────────────────────
+   Lleva a la pantalla de carga y APAGA la auto-carga de la nube para que, aunque
+   ya haya tareas de hoy publicadas, la app no te devuelva al dashboard mientras
+   adjuntas los reportes frescos. */
+function nuevaTanda(){
+  DATA._suppressAutoLoad=true;   // no dejar que la nube secuestre a esta PC
+  DATA._fromSync=false;
+  DATA._applying=false;
+  // limpiar archivos de entrada y los slots visuales de la portada
+  REPO_KEYS.forEach(k=>{ delete FILES[k];
+    const row=document.getElementById('fr'+k);
+    if(row){row.classList.remove('ok');const d=row.querySelector('.done');if(d)d.textContent='';}
+  });
+  DATA.ruta=null;DATA.rutaDemanda=null;DATA.seg=null;DATA.histOnly=false;
+  document.getElementById('results').style.display='none';
+  document.getElementById('uploadSection').style.display='block';
+  // sugerir la tanda que toca (si ya hay INICIO de hoy → RECHEQUEO)
+  if(typeof sugerirTurno==='function')sugerirTurno();
+  if(typeof refrescarAvisoSesion==='function')refrescarAvisoSesion();
+  repoBanner('➕ Nueva tanda: adjunta los reportes y pulsa EJECUTAR. (La sincronización no te moverá de aquí.)','wait');
+  setTimeout(()=>repoBanner('','none'),6000);
+  try{window.scrollTo(0,0);}catch(e){}
 }
 
 /* ── Espera de Firebase y arranque ──────────────────────────────────────── */
