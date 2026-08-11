@@ -217,6 +217,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 .seg-ef.sel[data-e=EJECUTADO]{background:#2e7d32;border-color:#2e7d32}
 .seg-ef.sel[data-e=PARCIAL]{background:#E68A00;border-color:#E68A00}
 .seg-ef.sel[data-e=PENDIENTE]{background:#cc0000;border-color:#cc0000}
+.seg-ef.sel[data-e=CERO]{background:#5C6BC0;border-color:#5C6BC0}
 .pill-est{padding:2px 8px;border-radius:10px;font-size:10px;font-weight:800;color:#fff;white-space:nowrap}
 
 /* ══ Sincronización colaborativa (v19) ══ */
@@ -1016,6 +1017,8 @@ async function ejecutar(){
     DATA.tieneProximidad=Object.keys(dictProx).length>0;
 
     DATA.histOnly=false;
+    // Capturar la BASE R033/R031 de ESTA tanda (para el seguimiento de este día/turno)
+    try{ if(typeof segCaptureBase==='function') await segCaptureBase(); }catch(e){console.warn('segCaptureBase',e);}
     document.getElementById('uploadSection').style.display='none';
     document.getElementById('results').style.display='block';
     buildTabs();renderTab();
@@ -1074,11 +1077,51 @@ function exportTab(){
   else if(currentTab==='capacidad'){rows=DATA.cap;name='CapacidadPuestos';}
   else if(currentTab==='bloqueados'){rows=DATA.bloqueados;name='BloqueadosX';}
   else if(currentTab==='repositor'){rows=(DATA.repo||[]).map(r=>({...r,adjBul:DATA.manualAdj[r.item]||0,totalBul:r.bulAB+(DATA.manualAdj[r.item]||0)}));name='RepositorPTL';}
+  else if(currentTab==='rop'){exportROPExcel();return;}
   else return;
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,name);
   XLSX.writeFile(wb,name+'.xlsx');
+}
+
+// Tareas ROP actualmente SELECCIONADAS (según el filtro modo + pisos excluidos)
+function getSelectedROPTasks(){
+  const fMode=DATA.ropFilter||'mixto';
+  const pExc=DATA.ropPisosExcluidos||new Set();
+  return (DATA.ropRutaTasks||[]).filter(t=>{
+    const pisoOk=!pExc.has(getPisoZona(t.zD));
+    if(fMode==='rop')return t.esROP;
+    if(fMode==='saldo')return t.esSaldo&&!t.esROP&&pisoOk;
+    return t.esROP||(t.esSaldo&&pisoOk);
+  });
+}
+// Exporta el ROP seleccionado a una hoja de Excel real (detalle por tarea)
+function exportROPExcel(){
+  const sel=getSelectedROPTasks();
+  if(!sel.length)return alert('No hay tareas ROP seleccionadas para exportar (revise el filtro ROP/Saldo/Mixto).');
+  const fMode=DATA.ropFilter||'mixto';
+  const modoTxt=fMode==='rop'?'Solo ROP':fMode==='saldo'?'Solo Saldo':'Mixto (ROP+Saldo)';
+  const rows=sel.map(t=>({
+    PASILLO:t.pasilloROP||'',
+    ITEM:t.item,
+    DESCRIPCION:t.desc||'',
+    CATEGORIA:t.catBODYM||'',
+    TIPO:t.esROP?'ROP':(t.esSaldo?'SALDO':''),
+    ZONA_DESPACHO:t.zD||'',
+    PUESTO:t.puesto||'',
+    UBIC_ALMACENAJE:t.ubic||'',
+    INV_PUESTO:t.invPto??'',
+    CAP_PUESTO:t.capPto??'',
+    BULTOS:t.tkB||0,
+    PALETAS:t.tkPal||0,
+    EN_CERO:(t.invPto<=0?'SI':'')
+  }));
+  const ws=XLSX.utils.json_to_sheet(rows);
+  ws['!cols']=[{wch:8},{wch:11},{wch:34},{wch:10},{wch:8},{wch:12},{wch:10},{wch:16},{wch:10},{wch:10},{wch:9},{wch:9},{wch:8}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'ROP_'+(fMode||'sel'));
+  XLSX.writeFile(wb,'ROP_seleccionado_'+modoTxt.replace(/[^A-Za-z]/g,'')+'_'+todayISO()+'.xlsx');
 }
 
 function filt(rows){
@@ -3027,11 +3070,15 @@ function histSaveSnapshot(silent){
     creado:new Date().toISOString(),
     ropFilter:DATA.ropFilter||'mixto',
     kpi:histKPI(rows),
-    rows:histPack(rows)
+    rows:histPack(rows),
+    // BASE R033/R031 de esta tanda (recortada a la ruta) para el seguimiento por tanda
+    base:DATA.segBaseCurrent||null
   };
   if(ix>=0)arr[ix]=snap;else arr.push(snap);
   arr.sort((a,b)=>{const k=(b.fecha+'|'+b.turno).localeCompare(a.fecha+'|'+a.turno);return k!==0?k:b.creado.localeCompare(a.creado);});
   while(arr.length>HIST_MAX)arr.pop();
+  // Conservar la BASE solo en las 6 tandas más recientes (evita llenar el navegador)
+  arr.forEach((s,i)=>{ if(i>=6&&s.base)delete s.base; });
   if(!histWrite(arr))return false;
   if(!silent)alert('✓ Archivado: '+turnoLabel(snap.turno)+' — '+fFechaES(snap.fecha)+'\n'+snap.kpi.tareas+' tareas · '+fN(snap.kpi.bultos)+' bultos · '+fN(snap.kpi.paletas)+' paletas');
   return true;
@@ -3408,6 +3455,13 @@ if(document.readyState!=='loading')initSesion();
 const SEG={};
 const segPct=(a,t)=>t>0?Math.round(a/t*100):0;
 function segNow(){const d=new Date();return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+// Categoría-piso: primera letra de la zona de despacho (o la zona si es numérica) — 'Sin categoría' si no aplica
+function segCatPiso(zD){
+  const z=String(zD||'').toUpperCase().trim();
+  if(!z||z.indexOf('SIN')===0)return'Sin categoría';
+  const f=z.charAt(0);
+  return /[A-Z]/.test(f)?f:z;
+}
 
 /* normKey — trim+upper+sin espacios, quita ceros a la izquierda si es numérico */
 function segNormKey(x){
@@ -3471,6 +3525,24 @@ async function segParseR031(file){
 /* Índices por item del R031 (para el doble mapeo cuando slot cambia el puesto)
    itemTot : item → unidades totales del item sumadas en TODOS los puestos
    porItem : item → [{puesto, base, act, d}]  (puestos donde el item tiene stock)  */
+/* Captura la BASE (R033/R031 de inicio) recortada a las claves de la ruta,
+   para poder rastrear ESTA tanda aunque luego se cargue otra (rechequeo). */
+async function segCaptureBase(){
+  if(!FILES.r033||!(DATA.ruta&&DATA.ruta.length)){DATA.segBaseCurrent=null;return;}
+  try{
+    const b033=await segParseR033(FILES.r033);
+    let b031=null;
+    if(FILES.r031)b031=await segParseR031(FILES.r031);
+    const base033={},base031={};
+    (DATA.ruta||[]).forEach(t=>{
+      const ku=t.item+'|'+segNormKey(t.ubic);
+      if(base033[ku]===undefined)base033[ku]=b033.mapNoLote[ku]??0;
+      if(b031){const kp=t.item+'|'+segNormKey(t.puesto);if(base031[kp]===undefined)base031[kp]=b031.map[kp]??0;}
+    });
+    DATA.segBaseCurrent={b033:base033,b031:b031?base031:null,ts:Date.now()};
+  }catch(e){console.warn('segCaptureBase parse',e);DATA.segBaseCurrent=null;}
+}
+
 function segIndexItem(map){
   const itemTot={},porItem={};
   Object.keys(map||{}).forEach(k=>{
@@ -3593,17 +3665,25 @@ function segRutaOptions(){
   });
   return opts;
 }
-function segGetRuta(){
-  const key=DATA.segRutaKey||(DATA.ruta&&DATA.ruta.length?'__actual':(histLoad()[0]||{}).id);
-  if(key==='__actual')return (DATA.ruta||[]).map(r=>{
-    const adj=(DATA.manualAdj&&DATA.manualAdj[r.item])||0;
-    if(!adj)return r;
-    const tkB=(r.tkB||0)+adj;const ratio=r.tkPal>0?r.tkB/r.tkPal:1;
-    return{...r,tkB,tkPal:Math.ceil(tkB/Math.max(ratio,1))};
-  });
-  const sn=histLoad().find(x=>x.id===key);
-  return sn?histUnpack(sn.rows):[];
+function segSelectedKey(){
+  return DATA.segRutaKey||(DATA.ruta&&DATA.ruta.length?'__actual':(histLoad()[0]||{}).id);
 }
+// Devuelve {rows, snap} de la ruta seleccionada (snap=null si es la ruta en pantalla)
+function segGetSelected(){
+  const key=segSelectedKey();
+  if(key==='__actual'){
+    const rows=(DATA.ruta||[]).map(r=>{
+      const adj=(DATA.manualAdj&&DATA.manualAdj[r.item])||0;
+      if(!adj)return r;
+      const tkB=(r.tkB||0)+adj;const ratio=r.tkPal>0?r.tkB/r.tkPal:1;
+      return{...r,tkB,tkPal:Math.ceil(tkB/Math.max(ratio,1))};
+    });
+    return{rows,snap:null};
+  }
+  const sn=histLoad().find(x=>x.id===key);
+  return{rows:sn?histUnpack(sn.rows):[],snap:sn||null};
+}
+function segGetRuta(){return segGetSelected().rows;}
 
 /* ── Adjuntar archivos ─────────────────────────────────────────────────── */
 function segPick(key,el){
@@ -3617,22 +3697,32 @@ function segSetRuta(v){DATA.segRutaKey=v;}
 
 /* ── Ejecutar cruce ────────────────────────────────────────────────────── */
 async function segEjecutar(){
-  const ruta=segGetRuta();
+  const {rows:ruta,snap}=segGetSelected();
   if(!ruta.length)return alert('No hay ruta para rastrear. Genere un análisis o seleccione un archivo del histórico.');
-  const fB033=FILES.seg033base||FILES.r033;
   const fA033=FILES.seg033act;
-  if(!fB033)return alert('Falta el R033 base. Ejecute primero el análisis FEFO (que carga el R033 de inicio) o adjunte el R033 base aquí.');
+  const tieneBaseTanda=!!(snap&&snap.base&&snap.base.b033);
+  const fB033=FILES.seg033base||FILES.r033;
+  if(!tieneBaseTanda&&!fB033)return alert('Falta el R033 base de esta tanda.\n\nSelecciona una ruta generada en esta sesión, o adjunta el R033 base aquí. (Las tandas archivadas guardan su base solo por unos días.)');
   if(!fA033)return alert('Adjunte el R033 ACTUAL (corte) para calcular el avance.');
   const btn=document.getElementById('segRunBtn');
   if(btn){btn.disabled=true;btn.textContent='Cruzando...';}
   try{
-    const b033=await segParseR033(fB033);
+    // BASE R033: de la tanda seleccionada (si está guardada) o del R033 cargado
+    let b033;
+    if(tieneBaseTanda){ b033={mapNoLote:snap.base.b033,mapFull:{}}; }
+    else { b033=await segParseR033(fB033); }
     const a033=await segParseR033(fA033);
-    const fB031=FILES.seg031base||FILES.r031;
+    // BASE R031
     const fA031=FILES.seg031act;
     let b031=null,a031=null;
-    if(fB031&&fA031){b031=await segParseR031(fB031);a031=await segParseR031(fA031);}
+    if(fA031){
+      if(tieneBaseTanda&&snap.base.b031){ b031={map:snap.base.b031}; }
+      else { const fB031=FILES.seg031base||FILES.r031; if(fB031)b031=await segParseR031(fB031); }
+      if(b031)a031=await segParseR031(fA031);
+    }
     const res=segCruzar(ruta,b033,a033,b031,a031);
+    res.baseTanda=tieneBaseTanda;
+    if(snap)res.tandaLabel=turnoLabel(snap.turno)+' · '+fFechaES(snap.fecha);
     DATA.seg=res;
     DATA.segEstFilt=DATA.segEstFilt||'TODOS';
     renderTab();
@@ -3696,22 +3786,32 @@ function renderSeguimientoTab(c){
     h+='<div class="seg-hint" style="color:#cc0000">No hay ruta disponible. Ejecute un análisis FEFO primero.</div>';
   }
 
+  // ¿La tanda seleccionada trae su propia base guardada? (para rastrear ese día/turno)
+  const _sel=segGetSelected();
+  const tandaBase033=!!(_sel.snap&&_sel.snap.base&&_sel.snap.base.b033);
+  const tandaBase031=!!(_sel.snap&&_sel.snap.base&&_sel.snap.base.b031);
+  const tandaLbl=_sel.snap?turnoLabel(_sel.snap.turno)+' '+fFechaES(_sel.snap.fecha):'';
+
   h+='<div class="seg-basegrid">';
   // Base 033
-  h+='<div class="seg-slot base '+(baseAuto033?'ok':'')+'"><div class="sbar" style="background:#ED7D31"></div><div class="sinfo"><div class="nm">R033 Base (inicio)</div>'+
-    (baseAuto033?'<div class="st">✓ tomado del R033 cargado</div>':'<div class="stg">adjunte el R033 de inicio</div>')+'</div>'+
-    (baseAuto033?'':'<label class="seg-btn" style="background:#ED7D31">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg033base\',this)"></label>')+'</div>';
+  const st033 = tandaBase033 ? '<div class="st">✓ base de la tanda: '+tandaLbl+'</div>'
+             : baseAuto033 ? '<div class="st">✓ tomado del R033 cargado</div>'
+             : '<div class="stg">adjunte el R033 de inicio</div>';
+  h+='<div class="seg-slot base '+(tandaBase033||baseAuto033?'ok':'')+'"><div class="sbar" style="background:#ED7D31"></div><div class="sinfo"><div class="nm">R033 Base (inicio)</div>'+st033+'</div>'+
+    ((tandaBase033||baseAuto033)?'':'<label class="seg-btn" style="background:#ED7D31">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg033base\',this)"></label>')+'</div>';
   // Actual 033 (obligatorio)
   h+='<div class="seg-slot '+(FILES.seg033act?'ok':'')+'"><div class="sbar" style="background:#149980"></div><div class="sinfo"><div class="nm">R033 Actual (corte) *</div><div class="js-st '+(FILES.seg033act?'st':'stg')+'">'+(FILES.seg033act?'✓ '+FILES.seg033act.name:'obligatorio')+'</div></div><label class="seg-btn" style="background:#149980">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg033act\',this)"></label></div>';
   // Base 031
-  h+='<div class="seg-slot base '+(baseAuto031?'ok':'')+'"><div class="sbar" style="background:#4472C4"></div><div class="sinfo"><div class="nm">R031 Base (inicio)</div>'+
-    (baseAuto031?'<div class="st">✓ tomado del R031 cargado</div>':'<div class="stg">opcional — para confirmar en puesto</div>')+'</div>'+
-    (baseAuto031?'':'<label class="seg-btn" style="background:#4472C4">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg031base\',this)"></label>')+'</div>';
+  const st031 = tandaBase031 ? '<div class="st">✓ base de la tanda: '+tandaLbl+'</div>'
+             : baseAuto031 ? '<div class="st">✓ tomado del R031 cargado</div>'
+             : '<div class="stg">opcional — para confirmar en puesto</div>';
+  h+='<div class="seg-slot base '+(tandaBase031||baseAuto031?'ok':'')+'"><div class="sbar" style="background:#4472C4"></div><div class="sinfo"><div class="nm">R031 Base (inicio)</div>'+st031+'</div>'+
+    ((tandaBase031||baseAuto031)?'':'<label class="seg-btn" style="background:#4472C4">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg031base\',this)"></label>')+'</div>';
   // Actual 031 (opcional)
   h+='<div class="seg-slot '+(FILES.seg031act?'ok':'')+'"><div class="sbar" style="background:#418FDE"></div><div class="sinfo"><div class="nm">R031 Actual (corte)</div><div class="js-st '+(FILES.seg031act?'st':'stg')+'">'+(FILES.seg031act?'✓ '+FILES.seg031act.name:'opcional — confirma unidades en puesto')+'</div></div><label class="seg-btn" style="background:#418FDE">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg031act\',this)"></label></div>';
   h+='</div>';
 
-  const canRun=rutaOpts.length&&(FILES.r033||FILES.seg033base);
+  const canRun=rutaOpts.length&&(tandaBase033||FILES.r033||FILES.seg033base);
   h+='<button class="seg-run" id="segRunBtn" onclick="segEjecutar()"'+(canRun?'':' disabled')+'>📡 Calcular avance</button>';
   h+='<span style="font-size:11px;color:#777;margin-left:12px">Puede volver a adjuntar solo el corte actual y recalcular las veces que necesite.</span>';
   h+='</div>';
@@ -3792,16 +3892,39 @@ function renderSeguimientoTab(c){
     h+='</div>';
   }
 
+  /* Puesto en Cero = SKU cuyo puesto de despacho tiene inv=0 en el R031 actual */
+  const ceroRows=g.modoCompleto?snap.filter(r=>(r.invPtoAct||0)<=0):[];
+  const nCero=ceroRows.length;
+
   /* Filtro por estado + tabla */
   const ef=DATA.segEstFilt||'TODOS';
   h+='<div class="seg-estfilt no-print">';
-  [['TODOS','Todas',g.total],['EJECUTADO','✅ Ejecutadas',g.ej],['PARCIAL','🟡 Parciales',g.par],['PENDIENTE','🔴 Pendientes',g.pen]].forEach(([e,l,n])=>{
+  const filtros=[['TODOS','Todas',g.total],['EJECUTADO','✅ Ejecutadas',g.ej],['PARCIAL','🟡 Parciales',g.par],['PENDIENTE','🔴 Pendientes',g.pen]];
+  if(g.modoCompleto)filtros.push(['CERO','📋 Puesto en Cero',nCero]);
+  filtros.forEach(([e,l,n])=>{
     h+='<button class="seg-ef'+(ef===e?' sel':'')+'" data-e="'+e+'" onclick="segSetEst(\''+e+'\')">'+l+' ('+n+')</button>';
   });
   h+='<button class="hist-btn hb-xls" style="margin-left:auto" onclick="segExport()">📥 Exportar avance</button>';
   h+='</div>';
 
-  let rows=ef==='TODOS'?snap:snap.filter(r=>r.estado===ef);
+  /* Tarjeta + chips por categoría cuando se ve "Puesto en Cero" (patrón de la app original) */
+  if(ef==='CERO'){
+    const cpen=ceroRows.filter(r=>r.estado==='PENDIENTE').length;
+    const cpar=ceroRows.filter(r=>r.estado==='PARCIAL').length;
+    const cej =ceroRows.filter(r=>r.estado==='EJECUTADO').length;
+    const cbul=ceroRows.reduce((a,r)=>a+(r.tkB||0),0);
+    const byCat={};ceroRows.forEach(r=>{const cc=segCatPiso(r.zD);byCat[cc]=(byCat[cc]||0)+1;});
+    const chips=Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([cc,n])=>'<span style="font-size:10px;font-weight:700;background:#ede8ff;color:#3d2b8a;padding:2px 8px;border-radius:5px">'+cc+': '+n+'</span>').join(' ');
+    h+='<div style="background:#fff;border-left:5px solid #5C6BC0;border-radius:0 8px 8px 0;padding:12px 16px;margin:0 16px 10px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px #5C6BC020">';
+    h+='<span style="font-size:22px">📋</span><div style="flex:1">';
+    h+='<div style="font-size:13px;font-weight:800;color:#3d2b8a">SKUs CON PUESTO DE DESPACHO EN CERO</div>';
+    h+='<div style="font-size:11px;color:#666;margin-top:2px">Ítems de la ruta con inventario = 0 en el R031 actual · corte '+g.hora+'</div>';
+    h+='<div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center"><span style="font-size:11px;font-weight:700;color:#cc2222">🔴 '+cpen+' pendientes</span><span style="font-size:11px;font-weight:700;color:#e88a00">🟡 '+cpar+' parciales</span><span style="font-size:11px;font-weight:700;color:#2d8a2d">✅ '+cej+' ejecutados (puesto aún en cero)</span><span style="font-size:11px;color:#556">📦 '+fN(cbul)+' bul en ruta</span></div>';
+    if(chips)h+='<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'+chips+'</div>';
+    h+='</div><div style="font-size:28px;font-weight:900;color:#5C6BC0">'+nCero+'</div></div>';
+  }
+
+  let rows=ef==='TODOS'?snap:ef==='CERO'?ceroRows:snap.filter(r=>r.estado===ef);
   const q=(document.getElementById('searchBox')?document.getElementById('searchBox').value:'').toLowerCase();
   if(q)rows=rows.filter(r=>[r.item,r.desc,r.ubic,r.puesto,r.lote].some(x=>String(x||'').toLowerCase().includes(q)));
   rows=[...rows].sort((a,b)=>{
