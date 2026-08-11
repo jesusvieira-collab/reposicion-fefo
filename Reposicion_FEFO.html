@@ -3657,9 +3657,19 @@ function segCruzar(ruta,b033,a033,b031,a031){
 }
 
 /* ── Fuente de la ruta base a rastrear ─────────────────────────────────── */
+// Snapshot archivado de la sesión ACTUAL (misma fecha+turno). Es la fuente estable
+// de la "ruta en pantalla" para el seguimiento (no cambia con el filtro ROP).
+function segCurrentSessionSnap(){
+  if(!DATA.sesion)return null;
+  return histLoad().find(s=>s.fecha===DATA.sesion.fecha&&s.turno===DATA.sesion.turno)||null;
+}
 function segRutaOptions(){
   const opts=[];
-  if(DATA.ruta&&DATA.ruta.length)opts.push({key:'__actual',label:'Ruta en pantalla ('+DATA.ruta.length+' tareas)'});
+  if(DATA.ruta&&DATA.ruta.length){
+    const cur=segCurrentSessionSnap();
+    const n=cur?cur.kpi.tareas:DATA.ruta.length;   // usar el conteo archivado (estable)
+    opts.push({key:'__actual',label:'Ruta en pantalla ('+n+' tareas)'});
+  }
   histLoad().forEach(sn=>{
     opts.push({key:sn.id,label:turnoLabel(sn.turno)+' · '+fFechaES(sn.fecha)+' · '+fHora(sn.creado)+' ('+sn.kpi.tareas+')'});
   });
@@ -3672,6 +3682,10 @@ function segSelectedKey(){
 function segGetSelected(){
   const key=segSelectedKey();
   if(key==='__actual'){
+    // Si ya hay una tanda archivada de esta sesión, usarla (estable, = lo generado).
+    // Así el conteo NO cambia aunque se filtre el ROP en la pestaña ROP por Pasillo.
+    const cur=segCurrentSessionSnap();
+    if(cur)return{rows:histUnpack(cur.rows),snap:cur};
     const rows=(DATA.ruta||[]).map(r=>{
       const adj=(DATA.manualAdj&&DATA.manualAdj[r.item])||0;
       if(!adj)return r;
@@ -3892,8 +3906,8 @@ function renderSeguimientoTab(c){
     h+='</div>';
   }
 
-  /* Puesto en Cero = SKU cuyo puesto de despacho tiene inv=0 en el R031 actual */
-  const ceroRows=g.modoCompleto?snap.filter(r=>(r.invPtoAct||0)<=0):[];
+  /* Puesto en Cero = SKU PENDIENTE/PARCIAL cuyo puesto de despacho tiene inv=0 (por bajar) */
+  const ceroRows=g.modoCompleto?snap.filter(r=>(r.invPtoAct||0)<=0&&r.estado!=='EJECUTADO'):[];
   const nCero=ceroRows.length;
 
   /* Filtro por estado + tabla */
@@ -3907,24 +3921,74 @@ function renderSeguimientoTab(c){
   h+='<button class="hist-btn hb-xls" style="margin-left:auto" onclick="segExport()">📥 Exportar avance</button>';
   h+='</div>';
 
-  /* Tarjeta + chips por categoría cuando se ve "Puesto en Cero" (patrón de la app original) */
+  /* ── VISTA "PUESTO EN CERO": tarjetas por pasillo (patrón de la app original) ── */
   if(ef==='CERO'){
-    const cpen=ceroRows.filter(r=>r.estado==='PENDIENTE').length;
-    const cpar=ceroRows.filter(r=>r.estado==='PARCIAL').length;
-    const cej =ceroRows.filter(r=>r.estado==='EJECUTADO').length;
-    const cbul=ceroRows.reduce((a,r)=>a+(r.tkB||0),0);
-    const byCat={};ceroRows.forEach(r=>{const cc=segCatPiso(r.zD);byCat[cc]=(byCat[cc]||0)+1;});
+    let cr=ceroRows;
+    const q0=(document.getElementById('searchBox')?document.getElementById('searchBox').value:'').toLowerCase();
+    if(q0)cr=cr.filter(r=>[r.item,r.desc,r.ubic,r.puesto,r.lote].some(x=>String(x||'').toLowerCase().includes(q0)));
+    const cpen=cr.filter(r=>r.estado==='PENDIENTE').length;
+    const cpar=cr.filter(r=>r.estado==='PARCIAL').length;
+    const cbul=cr.reduce((a,r)=>a+(r.tkB||0),0);
+    const byCat={};cr.forEach(r=>{const cc=segCatPiso(r.zD);byCat[cc]=(byCat[cc]||0)+1;});
     const chips=Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([cc,n])=>'<span style="font-size:10px;font-weight:700;background:#ede8ff;color:#3d2b8a;padding:2px 8px;border-radius:5px">'+cc+': '+n+'</span>').join(' ');
-    h+='<div style="background:#fff;border-left:5px solid #5C6BC0;border-radius:0 8px 8px 0;padding:12px 16px;margin:0 16px 10px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px #5C6BC020">';
-    h+='<span style="font-size:22px">📋</span><div style="flex:1">';
-    h+='<div style="font-size:13px;font-weight:800;color:#3d2b8a">SKUs CON PUESTO DE DESPACHO EN CERO</div>';
-    h+='<div style="font-size:11px;color:#666;margin-top:2px">Ítems de la ruta con inventario = 0 en el R031 actual · corte '+g.hora+'</div>';
-    h+='<div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center"><span style="font-size:11px;font-weight:700;color:#cc2222">🔴 '+cpen+' pendientes</span><span style="font-size:11px;font-weight:700;color:#e88a00">🟡 '+cpar+' parciales</span><span style="font-size:11px;font-weight:700;color:#2d8a2d">✅ '+cej+' ejecutados (puesto aún en cero)</span><span style="font-size:11px;color:#556">📦 '+fN(cbul)+' bul en ruta</span></div>';
+    // Banner rojo
+    h+='<div style="background:#fff;border-left:6px solid #cc2222;border-radius:0 10px 10px 0;padding:14px 18px;margin:0 16px 10px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 10px #cc222220">';
+    h+='<span style="font-size:26px">🚨</span><div style="flex:1">';
+    h+='<div style="font-size:14px;font-weight:900;color:#cc2222;letter-spacing:.3px">UBICACIONES PRIORITARIAS — STOCK CERO EN PUESTO</div>';
+    h+='<div style="font-size:11px;color:#666;margin-top:2px">Tareas pendientes/parciales cuyo puesto de despacho tiene inventario cero · corte '+g.hora+'</div>';
+    h+='<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;align-items:center"><span style="font-size:11px;font-weight:700;color:#cc2222">🔴 '+cpen+' pendientes</span><span style="font-size:11px;font-weight:700;color:#e88a00">🟡 '+cpar+' parciales</span><span style="font-size:11px;font-weight:600;color:#556">📦 '+fN(cbul)+' bultos en riesgo</span></div>';
     if(chips)h+='<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'+chips+'</div>';
-    h+='</div><div style="font-size:28px;font-weight:900;color:#5C6BC0">'+nCero+'</div></div>';
+    h+='</div><div style="font-size:30px;font-weight:900;color:#cc2222">'+cr.length+'</div></div>';
+    // Orden: por PASILLO, luego estado (pendiente primero), luego prioridad
+    cr=[...cr].sort((a,b)=>{
+      const pa=a.pasSeg||'zz',pb=b.pasSeg||'zz';if(pa!==pb)return pa.localeCompare(pb);
+      const ord={PENDIENTE:0,PARCIAL:1};if((ord[a.estado]??2)!==(ord[b.estado]??2))return (ord[a.estado]??2)-(ord[b.estado]??2);
+      return (a.prio||9)-(b.prio||9);
+    });
+    if(!cr.length){
+      h+='<div class="seg-empty" style="margin:0 16px">✅ Sin puestos en cero pendientes por bajar.</div>';
+      c.innerHTML=h;return;
+    }
+    h+='<div style="padding:0 16px 4px;font-size:11px;font-weight:700;color:#556;letter-spacing:.4px;text-transform:uppercase">Ordenado por pasillo · estado · prioridad</div>';
+    // Tarjetas agrupadas por pasillo (con separador por pasillo)
+    h+='<div style="padding:0 16px 24px">';
+    let curPas=null;
+    cr.forEach(r=>{
+      const pas=r.pasSeg||'??';
+      if(pas!==curPas){
+        if(curPas!==null)h+='</div>';
+        const nEnPas=cr.filter(x=>(x.pasSeg||'??')===pas).length;
+        h+='<div style="margin:12px 0 6px;display:flex;align-items:center;gap:8px"><span style="background:#0D47A1;color:#fff;font-weight:800;font-size:13px;padding:3px 12px;border-radius:6px">PASILLO '+pas+'</span><span style="font-size:11px;color:#888;font-weight:600">'+nEnPas+' ubicación(es) en cero</span></div>';
+        h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+        curPas=pas;
+      }
+      const isPen=r.estado==='PENDIENTE';
+      const opClr=SEG_OPCLR[r.operador]||'#888';
+      const opLbl=r.operador?(SEG_OPLBL[r.operador]||r.operador):'Sin asignar';
+      const preal=(r.confirmadoEn==='otro'&&segNormKey(r.puestoReal)!==segNormKey(r.puesto))?r.puestoReal:r.puesto;
+      h+='<div style="background:#fff;border-radius:10px;border-left:5px solid '+(isPen?'#cc2222':'#e88a00')+';box-shadow:0 1px 6px #0001;padding:11px 13px">';
+      h+='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px"><div><div style="font-size:13px;font-weight:800;color:#001E62">'+r.item+'</div><div style="font-size:10.5px;color:#666;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.desc)+'</div></div>';
+      h+='<span style="font-size:9px;font-weight:800;color:#fff;background:'+(isPen?'#cc2222':'#e88a00')+';padding:2px 8px;border-radius:10px;white-space:nowrap">'+(isPen?'🔴 PENDIENTE':'🟡 PARCIAL')+'</span></div>';
+      h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px;align-items:center">';
+      h+='<span style="font-size:10px;font-weight:700;background:#e8f0fe;color:#0D47A1;padding:2px 7px;border-radius:5px">P'+pas+' · '+r.ubic+'</span>';
+      h+='<span style="font-size:10px;font-weight:700;background:#ffe6cc;color:#8a4b00;padding:2px 7px;border-radius:5px">→ '+preal+'</span>';
+      h+='<span style="font-size:10px;font-weight:800;background:#fce4e4;color:#cc2222;padding:2px 7px;border-radius:5px">🚫 Stock puesto = 0</span></div>';
+      h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;align-items:center">';
+      h+='<span style="font-size:10px;background:#f2f2f2;padding:2px 7px;border-radius:5px">Lote: '+(r.lote||'—')+'</span>';
+      h+='<span style="font-size:10px;background:#f2f2f2;padding:2px 7px;border-radius:5px">Venc: '+fD(r.fv)+'</span>';
+      h+='<span style="font-size:10px;background:#f2f2f2;padding:2px 7px;border-radius:5px">Prio: '+(r.prio||'—')+'</span>';
+      h+='<span style="font-size:10px;background:#f2f2f2;padding:2px 7px;border-radius:5px"><b>'+fN(r.tkB||0)+'</b> bul · '+fN(r.tkU||0)+' uds</span>';
+      h+='<span style="font-size:9.5px;font-weight:700;color:#fff;background:'+opClr+';padding:2px 8px;border-radius:5px">'+opLbl+'</span></div>';
+      h+='<div style="font-size:9px;color:#bbb;margin-top:5px">Clave R031: '+r.item+'|'+segNormKey(r.puesto)+'</div>';
+      h+='</div>';
+    });
+    if(curPas!==null)h+='</div>';
+    h+='</div>';
+    c.innerHTML=h;return;
   }
 
-  let rows=ef==='TODOS'?snap:ef==='CERO'?ceroRows:snap.filter(r=>r.estado===ef);
+  let rows=snap.filter(r=>r.estado===ef);
+  if(ef==='TODOS')rows=snap;
   const q=(document.getElementById('searchBox')?document.getElementById('searchBox').value:'').toLowerCase();
   if(q)rows=rows.filter(r=>[r.item,r.desc,r.ubic,r.puesto,r.lote].some(x=>String(x||'').toLowerCase().includes(q)));
   rows=[...rows].sort((a,b)=>{
