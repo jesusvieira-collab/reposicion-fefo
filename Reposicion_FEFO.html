@@ -3664,14 +3664,15 @@ function segCurrentSessionSnap(){
   return histLoad().find(s=>s.fecha===DATA.sesion.fecha&&s.turno===DATA.sesion.turno)||null;
 }
 function segRutaOptions(){
+  // El conteo mostrado es PALETAS (= total del resumen ROP), para trazabilidad exacta.
   const opts=[];
   if(DATA.ruta&&DATA.ruta.length){
     const cur=segCurrentSessionSnap();
-    const n=cur?cur.kpi.tareas:DATA.ruta.length;   // usar el conteo archivado (estable)
-    opts.push({key:'__actual',label:'Ruta en pantalla ('+n+' tareas)'});
+    const pal=cur?cur.kpi.paletas:(DATA.ruta.reduce((a,r)=>a+(r.tkPal||0),0));
+    opts.push({key:'__actual',label:'Ruta en pantalla ('+fN(pal)+' paletas)'});
   }
   histLoad().forEach(sn=>{
-    opts.push({key:sn.id,label:turnoLabel(sn.turno)+' · '+fFechaES(sn.fecha)+' · '+fHora(sn.creado)+' ('+sn.kpi.tareas+')'});
+    opts.push({key:sn.id,label:turnoLabel(sn.turno)+' · '+fFechaES(sn.fecha)+' · '+fHora(sn.creado)+' ('+fN(sn.kpi.paletas||0)+' pal)'});
   });
   return opts;
 }
@@ -3841,6 +3842,10 @@ function renderSeguimientoTab(c){
   const snap=g.snap;
   const bul=est=>snap.filter(r=>r.estado===est).reduce((a,r)=>a+(r.tkB||0),0);
   const ejB=bul('EJECUTADO'),parB=bul('PARCIAL'),penB=bul('PENDIENTE');
+  // Trazabilidad por PALETAS (= total del resumen ROP)
+  const pal=est=>snap.filter(r=>r.estado===est).reduce((a,r)=>a+(r.tkPal||0),0);
+  const ejP=pal('EJECUTADO'),parP=pal('PARCIAL'),penP=pal('PENDIENTE');
+  const totPal=ejP+parP+penP;
 
   /* Progreso global */
   h+='<div class="seg-progcard">';
@@ -3852,8 +3857,11 @@ function renderSeguimientoTab(c){
   h+='<div class="seg-kbox" style="border-color:#E68A00"><div class="kv" style="color:#E68A00">'+g.par+'</div><div class="kl">Parciales</div></div>';
   h+='<div class="seg-kbox" style="border-color:#cc0000"><div class="kv" style="color:#cc0000">'+g.pen+'</div><div class="kl">Pendientes</div></div>';
   h+='<div class="seg-kbox" style="border-color:#418FDE"><div class="kv" style="color:#418FDE">'+g.total+'</div><div class="kl">Total tareas</div></div>';
-  h+='<div class="seg-kbox" style="border-color:#2e7d32"><div class="kv" style="color:#2e7d32;font-size:16px">'+fN(ejB+parB)+'</div><div class="kl">Bultos movidos</div></div>';
-  h+='<div class="seg-kbox" style="border-color:#cc0000"><div class="kv" style="color:#cc0000;font-size:16px">'+fN(penB)+'</div><div class="kl">Bultos pendientes</div></div>';
+  h+='<div class="seg-kbox" style="border-color:#001E62"><div class="kv" style="color:#001E62;font-size:17px">'+fN(totPal)+'</div><div class="kl">Total paletas</div></div>';
+  h+='<div class="seg-kbox" style="border-color:#2e7d32"><div class="kv" style="color:#2e7d32;font-size:17px">'+fN(ejP+parP)+'</div><div class="kl">Paletas movidas</div></div>';
+  h+='<div class="seg-kbox" style="border-color:#cc0000"><div class="kv" style="color:#cc0000;font-size:17px">'+fN(penP)+'</div><div class="kl">Paletas pendientes</div></div>';
+  h+='<div class="seg-kbox" style="border-color:#2e7d32"><div class="kv" style="color:#2e7d32;font-size:15px">'+fN(ejB+parB)+'</div><div class="kl">Bultos movidos</div></div>';
+  h+='<div class="seg-kbox" style="border-color:#cc0000"><div class="kv" style="color:#cc0000;font-size:15px">'+fN(penB)+'</div><div class="kl">Bultos pendientes</div></div>';
   h+='</div>';
   /* Diagnóstico: cómo se compone el % (explica el número) */
   h+='<details class="seg-diag" style="margin-top:12px"><summary style="cursor:pointer;font-size:12px;font-weight:800;color:#001E62">🔎 ¿Cómo se calcula este porcentaje? (desglose)</summary>';
