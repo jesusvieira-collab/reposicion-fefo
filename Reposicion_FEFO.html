@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v20 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v21 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v20 — colaborativo (Firebase): genera en una PC, sigue en otra · descarga de reportes multi-PC · histórico trimestral (IndexedDB)</p>
+  <p>Farmatodo · CENDIS Charallave · v21 — colaborativo (Firebase): el equipo abre el dashboard cuando quiere (no se abre solo) · descarga de reportes multi-PC · histórico trimestral (IndexedDB)</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -328,7 +328,8 @@ th.sortable.desc::after{content:'▼';opacity:1}
     </div>
     <div id="sesAviso" style="font-size:11px;font-weight:700;margin-top:8px"></div>
   </div>
-  <div class="sync-note" id="syncNote" style="display:none">☁ Esta herramienta está enlazada al equipo: cuando alguien genere las tareas, aparecerán solas aquí y saltarás al Dashboard.</div>
+  <div class="sync-note" id="syncNote" style="display:none">☁ Esta herramienta está enlazada al equipo: cuando alguien genere las tareas, aquí aparecerá un aviso para abrir el dashboard del equipo (no se abre solo).</div>
+  <div id="repoTeamBox" style="display:none;margin:14px 0;padding:14px;background:#E8F5E9;border:2px solid #149980;border-radius:10px"></div>
   <div id="cloudDownloadsBox" style="display:none;margin:14px 0;padding:12px;background:#F1F7FF;border:1.5px solid #418FDE;border-radius:10px">
     <div style="font-size:13px;font-weight:800;color:#001E62;margin-bottom:2px">⬇️ DESCARGAR REPORTES DEL EQUIPO</div>
     <div style="font-size:11px;color:#666;margin-bottom:9px">Los Excel exactos que se cargaron en la última corrida — descárgalos en cualquier PC para tus otras apps.</div>
@@ -4356,20 +4357,17 @@ async function repoPublish(){
 }
 
 /* ── Rol B: aplicar lo publicado (descargar → reconstruir → ejecutar) ────── */
-async function repoApplyManifest(man){
+// force=true → apertura MANUAL (opt-in) desde el botón "Ver dashboard del equipo".
+// Sin force ya NO se llama automáticamente: la app nunca salta sola al dashboard.
+async function repoApplyManifest(man, force){
   if(!man||!man.files||!man.files.length)return false;
   if(DATA._applying)return false;
-  if(DATA._suppressAutoLoad)return false;   // el usuario está preparando una tanda nueva → NO secuestrar al dashboard
-  if(DATA._loadedTs&&DATA._loadedTs===man.publishedTs)return false;   // ya cargado
-  // CANDADO POR FECHA: solo cargar automáticamente las tareas de HOY.
-  // Si lo último publicado es de un día anterior, NO mostrar nada (portada);
-  // para ver días previos el usuario entra a la pestaña 🗂️ Histórico.
-  const hoy=todayISO();
-  const fechaMan=(man.sesion&&man.sesion.fecha)||null;
-  if(fechaMan!==hoy){
-    DATA._loadedTs=man.publishedTs;   // marcar como visto para no reintentar
-    repoBanner('🌙 Las tareas de HOY ('+fFechaES(hoy)+') aún no se han generado. Aparecerán aquí solas cuando el equipo las publique. Para días anteriores, entra a 🗂️ Histórico.','wait');
-    return false;
+  if(!force){
+    if(DATA._suppressAutoLoad)return false;
+    if(DATA._loadedTs&&DATA._loadedTs===man.publishedTs)return false;   // ya cargado
+    const hoy=todayISO();
+    const fechaMan=(man.sesion&&man.sesion.fecha)||null;
+    if(fechaMan!==hoy){DATA._loadedTs=man.publishedTs;return false;}
   }
   DATA._applying=true;
   try{
@@ -4385,9 +4383,16 @@ async function repoApplyManifest(man){
       if(man.sesion.turno&&typeof setTurno==='function')setTurno(man.sesion.turno);}
     DATA._loadedTs=man.publishedTs;
     DATA._fromSync=true;
-    currentTab='dashboard';
     await ejecutar();                 // reproduce TODO el análisis en esta PC
     DATA._fromSync=false;
+    // Guardia: si por lo que sea no se generó ruta, NO mostrar un dashboard vacío
+    if(!DATA.ruta||!DATA.ruta.length){
+      document.getElementById('results').style.display='none';
+      document.getElementById('uploadSection').style.display='block';
+      repoBanner('⚠ No se pudo reconstruir la tanda del equipo (datos incompletos). Intenta de nuevo o genera una tanda nueva.','err');
+      setTimeout(()=>repoBanner('','none'),6000);
+      return false;
+    }
     currentTab='dashboard';buildTabs();renderTab();
     repoBanner('✓ Listo — datos del equipo cargados. Estás en el Dashboard.',' ok');
     setTimeout(()=>repoBanner('','none'),3500);
@@ -4395,6 +4400,51 @@ async function repoApplyManifest(man){
   }catch(e){console.warn('repoApply',e);DATA._fromSync=false;repoBanner('⚠ Error al cargar sincronizadas: '+e.message,'err');return false;}
   finally{DATA._applying=false;}
 }
+
+/* ── Aviso opt-in del equipo (NO auto-abre el dashboard) ─────────────────── */
+function repoShowTeamOffer(man){
+  if(typeof repoRenderCloudDownloads==='function')repoRenderCloudDownloads();
+  const box=document.getElementById('repoTeamBox');
+  DATA._teamMan=(man&&man.files&&man.files.length)?man:null;
+  if(!box)return;
+  if(!DATA._teamMan){box.style.display='none';repoBanner('',' none');return;}
+  const hoy=todayISO();
+  const fechaMan=(man.sesion&&man.sesion.fecha)||null;
+  const fec=fechaMan?fFechaES(fechaMan):'';const tur=(man.sesion&&man.sesion.turno)||'';
+  const esHoy=fechaMan===hoy;
+  let h='';
+  if(esHoy){
+    h+='<div style="font-size:13px;font-weight:800;color:#0B6B57;margin-bottom:4px">☁️ El equipo publicó las tareas de HOY</div>';
+    h+='<div style="font-size:12px;color:#333;margin-bottom:10px">'+esc(fec)+(tur?' · '+esc(tur):'')+' · '+man.files.length+' reportes. La herramienta ya <b>no se abre sola</b> en el dashboard — ábrela cuando quieras.</div>';
+    h+='<button onclick="repoLoadTeam()" style="background:#149980;color:#fff;border:none;padding:9px 16px;border-radius:7px;font-size:13px;font-weight:800;cursor:pointer">▶ Ver dashboard del equipo</button> ';
+  }else{
+    h+='<div style="font-size:12px;color:#555;margin-bottom:8px">🌙 Aún no hay tareas de HOY ('+fFechaES(hoy)+') publicadas. Lo último del equipo es del <b>'+esc(fec)+(tur?' · '+esc(tur):'')+'</b>.</div>';
+    h+='<button onclick="repoLoadTeam()" style="background:#607D8B;color:#fff;border:none;padding:7px 13px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Abrir lo último del equipo</button> ';
+  }
+  h+='<button onclick="repoClearPublished()" style="background:#fff;color:#C62828;border:1.5px solid #C62828;padding:8px 13px;border-radius:6px;font-size:11.5px;font-weight:700;cursor:pointer;margin-left:6px">🗑️ Retirar publicación</button>';
+  box.style.display='block';box.innerHTML=h;
+}
+// Apertura MANUAL del dashboard del equipo (opt-in)
+async function repoLoadTeam(){
+  try{
+    const man=DATA._teamMan||await window.fbLoad(REPO_COL,'current');
+    if(!man||!man.files||!man.files.length){alert('No hay tareas publicadas para abrir.');return;}
+    DATA._loadedTs=null;DATA._applying=false;DATA._suppressAutoLoad=false;
+    await repoApplyManifest(man,true);   // force = apertura manual
+  }catch(e){console.warn('repoLoadTeam',e);alert('No se pudo abrir: '+e.message);}
+}
+// Retirar del equipo la última tanda publicada (deja de aparecer en otras PC)
+async function repoClearPublished(){
+  if(!confirm('¿Retirar del equipo la última tanda publicada?\n\nDejará de aparecer y de abrirse en las demás PC.\nNo borra tu histórico local ni los archivos ya descargados.'))return;
+  try{
+    await window.fbSave(REPO_COL,'current',{publishedTs:Date.now(),sesion:null,files:[]});
+    DATA._teamMan=null;DATA._loadedTs=null;
+    const box=document.getElementById('repoTeamBox');if(box)box.style.display='none';
+    if(typeof repoRenderCloudDownloads==='function')repoRenderCloudDownloads();
+    repoBanner('✓ Publicación retirada — el equipo ya no verá ni abrirá esta tanda.',' ok');setTimeout(()=>repoBanner('','none'),4500);
+  }catch(e){console.warn('repoClearPublished',e);alert('No se pudo retirar: '+e.message);}
+}
+window.repoShowTeamOffer=repoShowTeamOffer;window.repoLoadTeam=repoLoadTeam;window.repoClearPublished=repoClearPublished;
 
 /* ── Preparar una TANDA NUEVA (p. ej. RECHEQUEO) ─────────────────────────────
    Lleva a la pantalla de carga y APAGA la auto-carga de la nube para que, aunque
@@ -4430,10 +4480,11 @@ window.repoInit=function(){
       repoBanner('Buscando tareas del equipo…','wait');
       if(typeof repoRenderCloudDownloads==='function')repoRenderCloudDownloads();  // llenar panel de descargas en la portada
       window.fbLoad(REPO_COL,'current').then(m=>{
-        if(m&&m.files&&m.files.length)repoApplyManifest(m);
-        else repoBanner('Aún no hay tareas publicadas. Se cargarán solas cuando el generador las publique.','wait')||setTimeout(()=>repoBanner('','none'),5000);
+        repoBanner('','none');
+        repoShowTeamOffer(m);   // muestra aviso + botón (opt-in), NO abre el dashboard solo
       });
-      window.fbListen&&window.fbListen(REPO_COL,'current',m=>{ if(m&&m.files)repoApplyManifest(m); });
+      // si alguien publica mientras estás en la portada, solo actualiza el aviso (no secuestra)
+      window.fbListen&&window.fbListen(REPO_COL,'current',m=>{ if(!DATA.ruta||!DATA.ruta.length)repoShowTeamOffer(m); });
     }else if(tries++<50){ setTimeout(wait,150); }
   })();
 };
