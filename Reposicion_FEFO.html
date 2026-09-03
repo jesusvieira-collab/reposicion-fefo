@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v19 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v20 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v19 — colaborativo (Firebase): genera en una PC, sigue en otra</p>
+  <p>Farmatodo · CENDIS Charallave · v20 — colaborativo (Firebase): genera en una PC, sigue en otra · descarga de reportes multi-PC · histórico trimestral (IndexedDB)</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -329,6 +329,11 @@ th.sortable.desc::after{content:'▼';opacity:1}
     <div id="sesAviso" style="font-size:11px;font-weight:700;margin-top:8px"></div>
   </div>
   <div class="sync-note" id="syncNote" style="display:none">☁ Esta herramienta está enlazada al equipo: cuando alguien genere las tareas, aparecerán solas aquí y saltarás al Dashboard.</div>
+  <div id="cloudDownloadsBox" style="display:none;margin:14px 0;padding:12px;background:#F1F7FF;border:1.5px solid #418FDE;border-radius:10px">
+    <div style="font-size:13px;font-weight:800;color:#001E62;margin-bottom:2px">⬇️ DESCARGAR REPORTES DEL EQUIPO</div>
+    <div style="font-size:11px;color:#666;margin-bottom:9px">Los Excel exactos que se cargaron en la última corrida — descárgalos en cualquier PC para tus otras apps.</div>
+    <div id="cloudDownloadsUp"><span style="font-size:11px;color:#888">Buscando reportes en la nube…</span></div>
+  </div>
   <button class="runbtn" id="runBtn" onclick="ejecutar()">▶ EJECUTAR ANÁLISIS</button>
   <button class="hist-open" onclick="abrirHistorico()">🗂️ Ver histórico de tareas archivadas</button>
 </div>
@@ -473,9 +478,13 @@ async function ejecutar(){
     // R033
     const almRows=[];const dictStockAlm={};const bloqueados=[];
     const hoy=new Date();hoy.setHours(0,0,0,0);
+    // Columna de FECHA DE RECEPCIÓN (para agrupar paletas idénticas): por nombre y, si no, la posición 10
+    const iRecep=(function(){const i=findCol(d033.headers,'FECHA RECIBIDO','FECHA RECIBIDA','FECHA DE RECEPCION','FECHA RECEPCION','RECIBIDO');return i>=0?i:10;})();
     d033.rows.forEach(r=>{
       const est=s(r[5]).toUpperCase();
       const it=s(r[1]),uds=v(r[6]),bul=v(r[7]),fvDate=parseFV(r[12]);
+      const recepDate=parseFV(r[iRecep]);
+      const recepKey=recepDate?recepDate.getTime():s(r[iRecep]);   // clave estable de recepción
       // Collect status X items for bloqueados tab
       if(est==='X'){
         const diasVenc=fvDate?Math.round((fvDate-hoy)/(86400000)):null;
@@ -487,7 +496,7 @@ async function ejecutar(){
       }
       if(est==='X'||est==='T')return;
       if(uds<=0)return;
-      almRows.push({item:it,ubic:s(r[0]),zona:s(r[15]),uds,bul,lote:s(r[8]),fv:fvDate||FAR,hasFV:!!fvDate,desc:s(r[2])});
+      almRows.push({item:it,ubic:s(r[0]),zona:s(r[15]),uds,bul,lote:s(r[8]),fv:fvDate||FAR,hasFV:!!fvDate,desc:s(r[2]),recep:recepDate,recepKey});
       if(!dictStockAlm[it])dictStockAlm[it]={uds:0,bul:0,desc:s(r[2])};
       dictStockAlm[it].uds+=uds;dictStockAlm[it].bul+=bul;
     });
@@ -500,7 +509,13 @@ async function ejecutar(){
       return 0;
     });
     DATA.bloqueados=bloqueados;
-    almRows.sort((a,b)=>a.item<b.item?-1:a.item>b.item?1:a.fv-b.fv);
+    // FEFO: item → FV → lote → recepción (para que las paletas idénticas queden juntas)
+    almRows.sort((a,b)=>{
+      if(a.item!==b.item)return a.item<b.item?-1:1;
+      if(a.fv-b.fv!==0)return a.fv-b.fv;
+      if(a.lote!==b.lote)return String(a.lote).localeCompare(String(b.lote));
+      return String(a.recepKey).localeCompare(String(b.recepKey));
+    });
     const almIdx={};
     almRows.forEach((r,i)=>{if(!almIdx[r.item])almIdx[r.item]={start:i,end:i};else almIdx[r.item].end=i;});
 
@@ -514,8 +529,11 @@ async function ejecutar(){
       for(let k=idx.start;k<=idx.end;k++){
         const ar=almRows[k];
         const fvKey=ar.fv?ar.fv.getTime():0;
-        if(!g||g.fvKey!==fvKey||g.lote!==ar.lote){
-          g={fvKey,lote:ar.lote,fv:ar.fv,hasFV:ar.hasFV,desc:ar.desc,items:[],udsTotal:0,bulTotal:0};
+        // Grupo de paletas IDÉNTICAS = mismo item + lote + FV + fecha de recepción.
+        // Dentro del grupo, la selección elige la MÁS CERCANA al puesto (proximidad).
+        const recepK=ar.recepKey!==undefined?String(ar.recepKey):'';
+        if(!g||g.fvKey!==fvKey||g.lote!==ar.lote||g.recepK!==recepK){
+          g={fvKey,lote:ar.lote,recepK,fv:ar.fv,hasFV:ar.hasFV,desc:ar.desc,items:[],udsTotal:0,bulTotal:0};
           groups.push(g);
         }
         g.items.push({k,ar});
@@ -606,46 +624,16 @@ async function ejecutar(){
     // Dado un item y un puesto, seleccionar la mejor ubicación de almacenaje
     // aplicando FEFO + regla 1 (proximidad) + regla 3 (balanceo de operadores)
     function selectAlmacenajeGroup(itemGroups, puesto){
+      // REGLA UNIFICADA (v22): con paletas idénticas (mismo item+lote+FV+recepción),
+      // gana SIEMPRE la MÁS CERCANA al puesto de despacho. El balanceo de operadores
+      // ya NO reordena la selección (eso tomaba la paleta lejana). El balanceo se
+      // gestiona con personal usando la vista de carga por pasillo/operador.
       const result=[];
       for(const grp of itemGroups){
-        const sorted=sortGroupByProximity(grp.items,puesto);
+        const sorted=sortGroupByProximity(grp.items,puesto);   // más cercana primero
         const available=sorted.filter(x=>(x.ar.uds-used[x.k])>0);
         if(available.length===0)continue;
-
-        const byPasillo={};
-        available.forEach(x=>{
-          const p=getPasilloAlm(x.ar.ubic)||'__';
-          if(!byPasillo[p])byPasillo[p]=[];
-          byPasillo[p].push(x);
-        });
-
-        const opGroupPasillos=Object.keys(byPasillo).filter(p=>getOpGroup(p));
-
-        if(opGroupPasillos.length>1){
-          // Bug C fix: sort se ejecuta aquí pero opTaskCount se lee en el loop de asignación
-          // Para que el balanceo sea real, ordenamos los pasillos por carga ACTUAL en cada
-          // llamada a selectAlmacenajeGroup (que se invoca una vez por ítem, antes del loop)
-          // y además re-evaluamos en el loop si hay empate. Esto es lo máximo que podemos
-          // hacer sin reestructurar el loop completo.
-          opGroupPasillos.sort((a,b)=>{
-            const ogA=getOpGroup(a),ogB=getOpGroup(b);
-            const ca=opTaskCount[ogA]||0,cb=opTaskCount[ogB]||0;
-            if(ca!==cb)return ca-cb;
-            if(dictProx[puesto.toUpperCase()]){
-              const prox=dictProx[puesto.toUpperCase()];
-              const ia=prox.indexOf(a);const ib=prox.indexOf(b);
-              return(ia<0?99:ia)-(ib<0?99:ib);
-            }
-            return a.localeCompare(b);
-          });
-
-          const primerPasillo=opGroupPasillos[0];
-          const priorItems=byPasillo[primerPasillo];
-          const restoItems=available.filter(x=>getPasilloAlm(x.ar.ubic)!==primerPasillo);
-          result.push(...priorItems,...restoItems);
-        }else{
-          result.push(...available);
-        }
+        result.push(...available);
       }
       return result;
     }
@@ -1034,6 +1022,7 @@ const TABS=[
   {id:'plan',label:'Plan Reposición'},
   {id:'resumen',label:'Resumen Item'},
   {id:'ruta',label:'Ruta Operador'},
+  {id:'pasillos',label:'🚚 Tareas x Pasillo'},
   {id:'rop',label:'🔄 ROP por Pasillo'},
   {id:'repositor',label:'⭐ Repositor PTL'},
   {id:'alertas',label:'Sin Stock'},
@@ -1078,6 +1067,7 @@ function exportTab(){
   else if(currentTab==='bloqueados'){rows=DATA.bloqueados;name='BloqueadosX';}
   else if(currentTab==='repositor'){rows=(DATA.repo||[]).map(r=>({...r,adjBul:DATA.manualAdj[r.item]||0,totalBul:r.bulAB+(DATA.manualAdj[r.item]||0)}));name='RepositorPTL';}
   else if(currentTab==='rop'){exportROPExcel();return;}
+  else if(currentTab==='pasillos'){exportPasillosExcel();return;}
   else return;
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new();
@@ -1702,6 +1692,10 @@ renderTab=function(){
   }
   if(currentTab==='repositor'){
     renderRepoTab(document.getElementById('content'));
+    return;
+  }
+  if(currentTab==='pasillos'){
+    renderPasillosTab(document.getElementById('content'));
     return;
   }
   if(currentTab==='bloqueados'){
@@ -2575,6 +2569,125 @@ function getFilteredBloq(){
   return rows;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   TAREAS POR PASILLO + CARGA POR OPERADOR (v22)
+   Agrupa la ruta por pasillo (tareas/bultos/paletas/en cero) y, según la
+   rotación de operadores (DATA.rotacion: pasillo→operador), suma la carga
+   por operador. Sin rotación cargada usa el mapeo por defecto de la app.
+   ══════════════════════════════════════════════════════════════════════ */
+const OP_META={
+  op1:{lbl:'Operador 1',cl:'#4472C4'},op2:{lbl:'Operador 2',cl:'#ED7D31'},
+  op3:{lbl:'Operador 3',cl:'#70AD47'},opA:{lbl:'Operador A',cl:'#7B1FA2'},
+  opB:{lbl:'Operador B',cl:'#00838F'}
+};
+const OP_PASILLO_DEF={'09':'op1','10':'op1','11':'op2','12':'op3','13':'op3',
+  '20':'opA','21':'opA','22':'opA','23':'opA','41':'opB','42':'opB','43':'opB','44':'opB'};
+function opMeta(id){return OP_META[id]||{lbl:id,cl:'#607D8B'};}
+// Operador que atiende un pasillo: rotación cargada tiene prioridad, si no el mapeo por defecto
+function pasilloOperador(pas){
+  if(DATA.rotacion&&DATA.rotacion[pas])return DATA.rotacion[pas];
+  return OP_PASILLO_DEF[pas]||null;
+}
+function pasilloDeTarea(r){return r.origen==='ROP'&&r.pasilloROP?String(r.pasilloROP):String(r.ubic||'').substring(0,2);}
+// Agrega la ruta por pasillo y por operador
+function pasilloAgg(rows){
+  const byPas={};
+  rows.forEach(r=>{
+    const p=pasilloDeTarea(r);if(!p)return;
+    const adj=(DATA.manualAdj&&DATA.manualAdj[r.item])||0;
+    const totBul=(r.tkB||0)+adj;
+    const ratio=r.tkPal>0?(r.tkB/r.tkPal):1;
+    const totPal=Math.ceil(totBul/Math.max(ratio,1));
+    const invPtoVal=r.invPto!==undefined?r.invPto:r.invDisp;
+    if(!byPas[p])byPas[p]={pas:p,op:pasilloOperador(p),tareas:0,bultos:0,paletas:0,cero:0,dem:0,rop:0,items:new Set()};
+    const g=byPas[p];
+    g.tareas++;g.bultos+=totBul;g.paletas+=totPal;
+    if(invPtoVal<=0)g.cero++;
+    if(r.origen==='ROP')g.rop++;else g.dem++;
+    g.items.add(r.item);
+  });
+  const pasArr=Object.values(byPas).map(g=>({...g,items:g.items.size}));
+  pasArr.sort((a,b)=>a.pas.localeCompare(b.pas));
+  // Por operador
+  const byOp={};
+  pasArr.forEach(g=>{
+    const k=g.op||'__sin';
+    if(!byOp[k])byOp[k]={op:g.op,tareas:0,bultos:0,paletas:0,cero:0,dem:0,rop:0,pasillos:[]};
+    const o=byOp[k];o.tareas+=g.tareas;o.bultos+=g.bultos;o.paletas+=g.paletas;o.cero+=g.cero;o.dem+=g.dem;o.rop+=g.rop;o.pasillos.push(g);
+  });
+  const opArr=Object.entries(byOp).map(([k,v])=>({key:k,...v}));
+  // Operadores reales primero (por paletas desc), 'sin asignar' al final
+  opArr.sort((a,b)=>{if(a.key==='__sin')return 1;if(b.key==='__sin')return -1;return b.paletas-a.paletas;});
+  return{pasArr,opArr};
+}
+function renderPasillosTab(c){
+  const rows=getFilteredRuta();
+  if(!rows||!rows.length){c.innerHTML='<div style="padding:40px;text-align:center;color:#888">No hay ruta generada. Ejecuta el análisis primero.</div>';return;}
+  const {pasArr,opArr}=pasilloAgg(rows);
+  const tTar=pasArr.reduce((a,g)=>a+g.tareas,0),tPal=pasArr.reduce((a,g)=>a+g.paletas,0),tBul=pasArr.reduce((a,g)=>a+g.bultos,0);
+  const opsReal=opArr.filter(o=>o.key!=='__sin');
+  // Detección de desbalance entre operadores (por paletas)
+  let desbal='';
+  if(opsReal.length>=2){
+    const mx=opsReal[0],mn=opsReal[opsReal.length-1];
+    if(mx.paletas>0&&(mx.paletas-mn.paletas)/mx.paletas>=0.25){
+      desbal='<div style="margin:0 0 12px;padding:10px 14px;background:#FFF3E0;border-left:5px solid #E65100;border-radius:8px;font-size:12.5px">'+
+        '⚖️ <b>Carga despareja:</b> '+opMeta(mx.op).lbl+' lleva <b>'+fN(mx.paletas)+' pal</b> y '+opMeta(mn.op).lbl+' <b>'+fN(mn.paletas)+' pal</b>. '+
+        'Considera enviar apoyo a los pasillos de '+opMeta(mx.op).lbl+'.</div>';
+    }
+  }
+  let h='';
+  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
+  h+='<div style="flex:1;min-width:120px;background:#001E62;color:#fff;padding:12px;border-radius:10px"><div style="font-size:11px;opacity:.85">TAREAS</div><div style="font-size:24px;font-weight:800">'+fN(tTar)+'</div></div>';
+  h+='<div style="flex:1;min-width:120px;background:#0D47A1;color:#fff;padding:12px;border-radius:10px"><div style="font-size:11px;opacity:.85">PALETAS</div><div style="font-size:24px;font-weight:800">'+fN(tPal)+'</div></div>';
+  h+='<div style="flex:1;min-width:120px;background:#149980;color:#fff;padding:12px;border-radius:10px"><div style="font-size:11px;opacity:.85">BULTOS</div><div style="font-size:24px;font-weight:800">'+fN(tBul)+'</div></div>';
+  h+='<div style="flex:1;min-width:120px;background:#418FDE;color:#fff;padding:12px;border-radius:10px"><div style="font-size:11px;opacity:.85">PASILLOS</div><div style="font-size:24px;font-weight:800">'+pasArr.length+'</div></div>';
+  h+='</div>';
+  if(!DATA.rotacion){
+    h+='<div style="margin-bottom:12px;padding:8px 12px;background:#EDE7F6;border-radius:6px;font-size:11.5px;color:#4527A0">ℹ️ Usando asignación de operadores por defecto (P09-10, P11, P12-13, P20-23, P41-44). Carga tu archivo de rotación para personalizar quién cubre cada pasillo.</div>';
+  }
+  h+=desbal;
+  // Un bloque por operador
+  opArr.forEach(o=>{
+    const m=o.key==='__sin'?{lbl:'Sin operador asignado',cl:'#90A4AE'}:opMeta(o.op);
+    const pasLbl=o.pasillos.map(g=>g.pas).join(', ');
+    h+='<div style="margin-bottom:14px;border:2px solid '+m.cl+';border-radius:10px;overflow:hidden">';
+    h+='<div style="background:'+m.cl+';color:#fff;padding:9px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">';
+    h+='<div style="font-weight:800;font-size:14px">'+esc(m.lbl)+' <span style="font-weight:400;font-size:11px;opacity:.9">· pasillos '+esc(pasLbl)+'</span></div>';
+    h+='<div style="font-size:12px;font-weight:700">'+fN(o.tareas)+' tareas · '+fN(o.paletas)+' pal · '+fN(o.bultos)+' bul'+(o.cero>0?' · <span style="background:#fff;color:#cc0000;padding:1px 6px;border-radius:4px">🔴 '+o.cero+' en cero</span>':'')+'</div>';
+    h+='</div>';
+    h+='<table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr style="background:#f5f7fa;color:#444">';
+    ['Pasillo','Tareas','Paletas','Bultos','Items','Demanda','ROP','En cero'].forEach(cc=>h+='<th style="padding:6px 8px;text-align:'+(cc==='Pasillo'?'left':'right')+';border-bottom:1px solid #e0e0e0">'+cc+'</th>');
+    h+='</tr></thead><tbody>';
+    o.pasillos.forEach((g,i)=>{
+      h+='<tr style="'+(i%2?'background:#fafafa':'')+'">';
+      h+='<td style="padding:6px 8px;font-weight:800;color:'+m.cl+'">Pasillo '+esc(g.pas)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right;font-weight:700">'+fN(g.tareas)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right;font-weight:800;background:#e8f0fe;color:#001E62">'+fN(g.paletas)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right;color:#149980;font-weight:700">'+fN(g.bultos)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right;color:#666">'+fN(g.items)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right">'+fN(g.dem)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right;color:#C62828">'+fN(g.rop)+'</td>';
+      h+='<td style="padding:6px 8px;text-align:right">'+(g.cero>0?'<b style="color:#cc0000">'+g.cero+'</b>':'0')+'</td>';
+      h+='</tr>';
+    });
+    h+='</tbody></table></div>';
+  });
+  c.innerHTML=h;
+}
+function exportPasillosExcel(){
+  const rows=getFilteredRuta();
+  if(!rows||!rows.length){alert('No hay ruta para exportar.');return;}
+  const {pasArr}=pasilloAgg(rows);
+  const out=pasArr.map(g=>({
+    Operador:g.op?opMeta(g.op).lbl:'Sin asignar',Pasillo:g.pas,Tareas:g.tareas,
+    Paletas:g.paletas,Bultos:g.bultos,Items:g.items,Demanda:g.dem,ROP:g.rop,'En cero':g.cero
+  }));
+  const ws=XLSX.utils.json_to_sheet(out);const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'TareasPorPasillo');
+  XLSX.writeFile(wb,'Tareas_por_Pasillo.xlsx');
+}
+
 function renderBloqueadosTab(c){
   const rows=getFilteredBloq();
   const totalUds=rows.reduce((a,r)=>a+r.uds,0);
@@ -2851,6 +2964,12 @@ function renderDashboard(c){
   [['R031 Picking',DATA.n031,'#4472C4'],['R033 Almacenaje',DATA.n033,'#ED7D31'],['R120 Demanda',DATA.n120,'#70AD47'],['R140 Promedio',DATA.n140,'#418FDE']].forEach(([l,vv,cl])=>{
     h+='<div class="dash-kpi"><span>'+l+'</span><b style="color:'+cl+'">'+fN(vv)+' filas</b></div>';
   });
+  // ── Descargar los Excel cargados (desde este PC u otro, vía nube) ──
+  h+='<div style="margin-top:12px;padding:10px;background:#F1F7FF;border:1.5px solid #418FDE;border-radius:8px">';
+  h+='<div style="font-size:12px;font-weight:700;color:#001E62;margin-bottom:2px">⬇️ DESCARGAR REPORTES CARGADOS</div>';
+  h+='<div style="font-size:10.5px;color:#666;margin-bottom:8px">Los mismos Excel de esta corrida, para tus otras apps — disponibles desde cualquier PC.</div>';
+  h+='<div id="cloudDownloads"><span style="font-size:11px;color:#888">Buscando reportes…</span></div>';
+  h+='</div>';
   if(DATA.estrellaSet&&DATA.estrellaSet.size>0){
     h+='<div style="margin-top:10px;padding:8px;background:#fff3e0;border-radius:6px;font-size:12px"><b>⭐ '+DATA.estrellaSet.size+' Productos Estrella cargados</b></div>';
   }
@@ -2938,6 +3057,7 @@ function renderDashboard(c){
 
   h+='</div>';
   c.innerHTML=h;
+  if(typeof repoRenderCloudDownloads==='function')setTimeout(repoRenderCloudDownloads,0);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -2947,8 +3067,13 @@ function renderDashboard(c){
    - Comparador INICIO vs RECHEQUEO: % de avance por pasillo y operador
    ══════════════════════════════════════════════════════════════════════ */
 
-const HIST_KEY='FTD_REPO_HIST_V1';
-const HIST_MAX=60;
+const HIST_KEY='FTD_REPO_HIST_V1';        // localStorage: ahora SOLO índice liviano (sin filas) — no desborda
+const HIST_IDB_DB='FTD_REPO_HIST_DB';     // IndexedDB: datos completos (cientos de MB de cupo)
+const HIST_IDB_STORE='snaps';
+const HIST_IDB_KEY='all';
+const HIST_RETENTION_DAYS=95;             // trimestre rodante: conserva ~3 meses y suelta el día más viejo al avanzar
+const HIST_MAX=400;                       // tope duro de seguridad
+const HIST_BASE_KEEP=30;                  // nº de tandas recientes que conservan su BASE (para seguimiento)
 let SES_TURNO='INICIO';
 let histSelId=null;      // snapshot abierto en modo "Ver"
 let histCmpFecha=null;   // fecha abierta en modo "Comparar"
@@ -2998,14 +3123,75 @@ function sugerirTurno(){
   setTurno(hayIni&&!hayRec?'RECHEQUEO':'INICIO');
 }
 
-/* ── Persistencia ─────────────────────────────────────────────────────── */
-function histLoad(){try{const raw=localStorage.getItem(HIST_KEY);return raw?JSON.parse(raw):[];}catch(e){console.error(e);return[];}}
-function histWrite(arr){
-  try{localStorage.setItem(HIST_KEY,JSON.stringify(arr));return true;}
-  catch(e){alert('No se pudo guardar el histórico (almacenamiento del navegador lleno).\n\nElimine archivos antiguos desde la pestaña Histórico o descargue un respaldo .json.');return false;}
+/* ── Persistencia (IndexedDB primario + índice liviano en localStorage) ───
+   El histórico completo (con filas y base) vive en IndexedDB, que tiene mucho
+   más cupo que localStorage. En localStorage guardamos solo un índice liviano
+   (sin filas) para poder listar al instante y como respaldo de migración.
+   Retención: al guardar se descarta lo que supere HIST_RETENTION_DAYS (trimestre
+   rodante), soltando el día más viejo a medida que avanza el calendario. */
+let HIST_CACHE=(function(){try{const raw=localStorage.getItem(HIST_KEY);return raw?JSON.parse(raw):[];}catch(e){return[];}})();
+let HIST_READY=false;
+
+function histCutISO(){const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-HIST_RETENTION_DAYS);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function histPrune(arr){
+  const cut=histCutISO();
+  let out=(arr||[]).filter(s=>s&&s.fecha&&s.fecha>=cut);    // solo el último trimestre
+  out.sort((a,b)=>{const k=(b.fecha+'|'+b.turno).localeCompare(a.fecha+'|'+a.turno);return k!==0?k:String(b.creado||'').localeCompare(String(a.creado||''));});
+  if(out.length>HIST_MAX)out=out.slice(0,HIST_MAX);
+  out.forEach((s,i)=>{ if(i>=HIST_BASE_KEEP&&s.base)delete s.base; });   // base solo en las recientes
+  return out;
 }
-function histBytes(){try{return new Blob([localStorage.getItem(HIST_KEY)||'']).size;}catch(e){return 0;}}
+// índice liviano (sin filas ni base) para localStorage
+function histLite(arr){return (arr||[]).map(s=>({id:s.id,fecha:s.fecha,turno:s.turno,nota:s.nota,creado:s.creado,ropFilter:s.ropFilter,kpi:s.kpi}));}
+
+// ── IndexedDB helpers ──
+function histIdbOpen(){return new Promise((res,rej)=>{try{
+  const rq=indexedDB.open(HIST_IDB_DB,1);
+  rq.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(HIST_IDB_STORE))db.createObjectStore(HIST_IDB_STORE);};
+  rq.onsuccess=e=>res(e.target.result);rq.onerror=()=>rej(rq.error);
+}catch(e){rej(e);}});}
+async function histIdbGet(){try{const db=await histIdbOpen();return await new Promise((res,rej)=>{
+  const tx=db.transaction(HIST_IDB_STORE,'readonly');const rq=tx.objectStore(HIST_IDB_STORE).get(HIST_IDB_KEY);
+  rq.onsuccess=()=>res(rq.result||null);rq.onerror=()=>rej(rq.error);});}catch(e){console.warn('histIdbGet',e);return null;}}
+async function histIdbSet(arr){try{const db=await histIdbOpen();return await new Promise((res,rej)=>{
+  const tx=db.transaction(HIST_IDB_STORE,'readwrite');tx.objectStore(HIST_IDB_STORE).put(arr,HIST_IDB_KEY);
+  tx.oncomplete=()=>res(true);tx.onerror=()=>rej(tx.error);});}catch(e){console.warn('histIdbSet',e);return false;}}
+
+function histLoad(){return HIST_CACHE||[];}
+function histWrite(arr){
+  HIST_CACHE=histPrune(arr);
+  // índice liviano a localStorage (sincrónico, nunca desborda)
+  try{localStorage.setItem(HIST_KEY,JSON.stringify(histLite(HIST_CACHE)));}
+  catch(e){try{localStorage.removeItem(HIST_KEY);}catch(_){}}   // si aún así falla, IDB es el primario
+  // datos completos a IndexedDB (async, primario)
+  histIdbSet(HIST_CACHE);
+  return true;
+}
+function histBytes(){try{return new Blob([JSON.stringify(HIST_CACHE)]).size;}catch(e){return 0;}}
 function fKB(b){return b>1048576?(b/1048576).toFixed(1)+' MB':Math.round(b/1024)+' KB';}
+
+// Carga inicial: combina IndexedDB con el localStorage viejo (migración) y refresca la UI
+async function histInit(){
+  const idb=await histIdbGet();
+  const legacy=HIST_CACHE||[];
+  const byFT={};
+  [...(idb||[]),...legacy].forEach(s=>{
+    if(!s||!s.fecha||!s.turno)return;
+    const k=s.fecha+'|'+s.turno;const cur=byFT[k];
+    if(!cur){byFT[k]=s;return;}
+    const sR=(s.rows&&s.rows.length)||0,cR=(cur.rows&&cur.rows.length)||0;
+    if(sR>cR||(sR===cR&&String(s.creado||'')>String(cur.creado||'')))byFT[k]=s;   // preferir con filas / más reciente
+  });
+  HIST_CACHE=histPrune(Object.values(byFT));
+  HIST_READY=true;
+  await histIdbSet(HIST_CACHE);
+  try{localStorage.setItem(HIST_KEY,JSON.stringify(histLite(HIST_CACHE)));}catch(e){}
+  try{if(typeof refrescarAvisoSesion==='function')refrescarAvisoSesion();
+      if(typeof sugerirTurno==='function')sugerirTurno();
+      if(typeof currentTab!=='undefined'&&currentTab==='historico'&&typeof renderTab==='function')renderTab();}catch(e){}
+}
+window.histInit=histInit;
 
 const HFLD=['item','desc','ubic','zA','lote','fv','prio','tkU','tkB','tkPal','zD','puesto','operador','modoLabel','origen','tipoTarea','invPto','pasilloROP','esROP','esSaldo','catBODYM','isE'];
 function histPack(rows){
@@ -3075,10 +3261,7 @@ function histSaveSnapshot(silent){
     base:DATA.segBaseCurrent||null
   };
   if(ix>=0)arr[ix]=snap;else arr.push(snap);
-  arr.sort((a,b)=>{const k=(b.fecha+'|'+b.turno).localeCompare(a.fecha+'|'+a.turno);return k!==0?k:b.creado.localeCompare(a.creado);});
-  while(arr.length>HIST_MAX)arr.pop();
-  // Conservar la BASE solo en las 6 tandas más recientes (evita llenar el navegador)
-  arr.forEach((s,i)=>{ if(i>=6&&s.base)delete s.base; });
+  // histWrite ordena, recorta al trimestre (HIST_RETENTION_DAYS) y conserva la BASE solo en las recientes
   if(!histWrite(arr))return false;
   if(!silent)alert('✓ Archivado: '+turnoLabel(snap.turno)+' — '+fFechaES(snap.fecha)+'\n'+snap.kpi.tareas+' tareas · '+fN(snap.kpi.bultos)+' bultos · '+fN(snap.kpi.paletas)+' paletas');
   return true;
@@ -3201,7 +3384,7 @@ function renderHistoricoTab(c){
   h+='<button class="hist-btn hb-io" onclick="histExportJSON()">⬇ Respaldo .json</button>';
   h+='<label class="hist-btn hb-io" style="display:inline-block">⬆ Importar respaldo<input type="file" accept=".json" style="display:none" onchange="histImportJSON(this)"></label>';
   h+='<button class="hist-btn hb-del" onclick="histLimpiarTodo()">🗑 Borrar todo</button>';
-  h+='<span style="font-size:11px;color:#888;margin-left:auto">'+arr.length+' archivo(s) · '+fKB(histBytes())+' usados · máx. '+HIST_MAX+'</span>';
+  h+='<span style="font-size:11px;color:#888;margin-left:auto">'+arr.length+' archivo(s) · '+fKB(histBytes())+' · 🗄️ IndexedDB · conserva el último trimestre ('+HIST_RETENTION_DAYS+' días)</span>';
   h+='</div>';
   h+='<div style="font-size:10px;color:#999;margin-top:8px">Los archivos se guardan en este navegador y este equipo. Use el respaldo .json para moverlos a otra computadora.</div>';
   h+='</div>';
@@ -3435,8 +3618,8 @@ function abrirHistorico(){
   buildTabs();renderTab();
 }
 
-document.addEventListener('DOMContentLoaded',function(){initSesion();var n=document.getElementById('syncNote');if(n&&window.fbConfigured)n.style.display='flex';});
-if(document.readyState!=='loading')initSesion();
+document.addEventListener('DOMContentLoaded',function(){initSesion();if(typeof histInit==='function')histInit();var n=document.getElementById('syncNote');if(n&&window.fbConfigured)n.style.display='flex';});
+if(document.readyState!=='loading'){initSesion();if(typeof histInit==='function')histInit();}
 
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -4082,6 +4265,72 @@ function repoB64ToFile(b64,name){
   return new File([arr],name||'archivo.xlsx');
 }
 
+/* ── Descarga de los Excel cargados (este PC u otro, vía Firebase) ───────── */
+const REPO_LABELS={r031:'R031 Picking',r033:'R033 Almacenaje',r120:'R120 Demanda',r140:'R140 Promedio',r109:'R109 ROP',proximidad:'Tabla proximidad',estrella:'Productos estrella'};
+function repoTriggerDownload(blobOrFile,name){
+  const url=URL.createObjectURL(blobOrFile);
+  const a=document.createElement('a');a.href=url;a.download=name||'reporte.xlsx';
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url);a.remove&&a.remove();},1500);
+}
+async function repoFetchCurrent(){
+  if(!window.fbConfigured||typeof window.fbLoad!=='function')return null;
+  try{return await window.fbLoad(REPO_COL,'current');}catch(e){console.warn('repoFetchCurrent',e);return null;}
+}
+// Descargar un reporte por clave: usa el archivo local si está, si no lo reconstruye desde la nube
+async function repoDownloadKey(key,btn){
+  try{
+    if(btn){btn.disabled=true;btn.dataset.txt=btn.innerHTML;btn.innerHTML='⏳ Descargando…';}
+    if(FILES[key] instanceof File){repoTriggerDownload(FILES[key],FILES[key].name);}
+    else{
+      const man=await repoFetchCurrent();
+      const fm=man&&man.files&&man.files.find(f=>f.key===key);
+      if(!fm){alert('Ese reporte aún no está publicado en la nube.');return;}
+      let b64='';
+      for(let i=0;i<fm.chunks;i++){const d=await window.fbLoad(REPO_COL,'file_'+key+'_'+i);if(d&&d.d)b64+=d.d;}
+      const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+      repoTriggerDownload(new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),fm.name||key+'.xlsx');
+    }
+  }catch(e){console.warn('repoDownloadKey',e);alert('No se pudo descargar el reporte: '+e.message);}
+  finally{if(btn){btn.disabled=false;if(btn.dataset.txt)btn.innerHTML=btn.dataset.txt;}}
+}
+window.repoDownloadKey=repoDownloadKey;
+// Pinta la lista de descargas en el Dashboard y en la pantalla de carga.
+// Combina lo cargado en ESTE PC con lo publicado en la nube (para otros PC).
+async function repoRenderCloudDownloads(){
+  const boxes=['cloudDownloads','cloudDownloadsUp'].map(id=>document.getElementById(id)).filter(Boolean);
+  const upBox=document.getElementById('cloudDownloadsBox');
+  if(!boxes.length)return;
+  const localKeys=REPO_KEYS.filter(k=>FILES[k] instanceof File);
+  const man=await repoFetchCurrent();
+  const cloudFiles=(man&&man.files)||[];
+  const seen={};const items=[];
+  localKeys.forEach(k=>{seen[k]=1;items.push({key:k,name:FILES[k].name,size:FILES[k].size,src:'local'});});
+  cloudFiles.forEach(fm=>{if(!seen[fm.key]){seen[fm.key]=1;items.push({key:fm.key,name:fm.name,size:fm.size,src:'nube'});}});
+  let h;
+  if(!items.length){
+    h=window.fbConfigured
+      ?'<span style="font-size:11px;color:#888">Aún no hay reportes publicados. Cuando alguien ejecute una corrida quedarán disponibles aquí para todo el equipo.</span>'
+      :'<span style="font-size:11px;color:#888">Carga y ejecuta los reportes para poder descargarlos aquí.</span>';
+    if(upBox)upBox.style.display='none';
+  }else{
+    h='';
+    if(man&&man.sesion){
+      const fec=man.sesion.fecha?fFechaES(man.sesion.fecha):'';const tur=man.sesion.turno||'';
+      h+='<div style="font-size:10.5px;color:#555;margin-bottom:7px">☁️ Última corrida en la nube: '+(fec?fec+' · '+tur:'—')+(man.publishedTs?' · '+fHora(man.publishedTs):'')+'</div>';
+    }
+    items.forEach(it=>{
+      const kb=it.size?fKB(it.size):'';
+      const tag=it.src==='local'?'<span style="color:#149980">● este PC</span>':'<span style="color:#418FDE">☁ nube</span>';
+      h+='<button onclick="repoDownloadKey(\''+it.key+'\',this)" style="display:block;width:100%;text-align:left;margin-bottom:5px;background:#fff;border:1.5px solid #418FDE;color:#001E62;padding:7px 10px;border-radius:6px;font-size:11.5px;font-weight:600;cursor:pointer">'+
+        '⬇ '+(REPO_LABELS[it.key]||it.key)+' <span style="float:right;font-weight:400;font-size:10px">'+tag+(kb?' · '+kb:'')+'</span></button>';
+    });
+    if(upBox)upBox.style.display='block';
+  }
+  boxes.forEach(b=>b.innerHTML=h);
+}
+window.repoRenderCloudDownloads=repoRenderCloudDownloads;
+
 /* ── Rol A: publicar los reportes generados ─────────────────────────────── */
 async function repoPublish(){
   if(!window.fbConfigured||typeof window.fbSave!=='function')return;
@@ -4179,6 +4428,7 @@ window.repoInit=function(){
       window.fbSetStatus&&window.fbSetStatus(!!window.fbConfigured);
       if(!window.fbConfigured)return;                       // modo local
       repoBanner('Buscando tareas del equipo…','wait');
+      if(typeof repoRenderCloudDownloads==='function')repoRenderCloudDownloads();  // llenar panel de descargas en la portada
       window.fbLoad(REPO_COL,'current').then(m=>{
         if(m&&m.files&&m.files.length)repoApplyManifest(m);
         else repoBanner('Aún no hay tareas publicadas. Se cargarán solas cuando el generador las publique.','wait')||setTimeout(()=>repoBanner('','none'),5000);
