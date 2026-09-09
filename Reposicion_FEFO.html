@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v24 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v25 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v24 — Guardar/Congelar selección (seguimiento cuadra) · ruta ajustada en Seguimiento · DYM sin "Sin puesto" · balanceo por pasillo · histórico trimestral</p>
+  <p>Farmatodo · CENDIS Charallave · v25 — ruta ajustada cruza contra base COMPLETA (paletas sustituidas de otros pasillos) · Guardar/Congelar · DYM sin "Sin puesto" · balanceo por pasillo · histórico trimestral</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -3936,9 +3936,11 @@ function segSelectedKey(){
 function segGetSelected(){
   const key=segSelectedKey();
   if(key==='__ajustada'&&DATA.segRutaAjustada){
-    // Rastrear contra la ruta ajustada; la BASE sale de la tanda actual (si existe) o del R033 cargado
-    const cur=segCurrentSessionSnap();
-    return{rows:DATA.segRutaAjustada.rows,snap:(cur&&cur.base)?{fecha:cur.fecha,turno:cur.turno,base:cur.base,kpi:{tareas:DATA.segRutaAjustada.tareas,paletas:DATA.segRutaAjustada.pal}}:null};
+    // Rastrear contra la ruta ajustada usando la BASE COMPLETA (R033/R031 de inicio),
+    // NO la base recortada de la ruta original: las paletas sustituidas vienen de
+    // ubicaciones de OTROS pasillos que no están en la base recortada. snap=null fuerza
+    // a segEjecutar a parsear el R033/R031 completo cargado (FILES.r033 / FILES.r031).
+    return{rows:DATA.segRutaAjustada.rows,snap:null};
   }
   if(key==='__actual'){
     // Si ya hay una tanda archivada de esta sesión, usarla (estable, = lo generado).
@@ -3989,7 +3991,9 @@ async function segParseRutaAjustada(file){
   const rows=[];
   d.rows.forEach(r=>{
     const item=s(r[ci]);if(!item)return;
-    const tkB=v(r[cb]);const tkPal=cp>=0?v(r[cp]):0;
+    const tkBraw=v(r[cb]);
+    const tkB=tkBraw>0?Math.ceil(tkBraw-1e-9):0;   // redondear bultos fraccionarios (filas sustituidas)
+    const tkPal=cp>=0?v(r[cp]):0;                    // sin paleta = 1 (paleta sustituida) más abajo
     const origenRaw=cor>=0?s(r[cor]).toUpperCase():'';
     const esROP=/ROP/.test(origenRaw);
     const ubic=cu>=0?s(r[cu]):'';
