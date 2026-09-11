@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v25 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v26 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v25 — ruta ajustada cruza contra base COMPLETA (paletas sustituidas de otros pasillos) · Guardar/Congelar · DYM sin "Sin puesto" · balanceo por pasillo · histórico trimestral</p>
+  <p>Farmatodo · CENDIS Charallave · v26 — "Sin puesto" fuera del cuadro y del total (conteo aparte) · ruta ajustada vs base completa · Guardar/Congelar · balanceo por pasillo · histórico trimestral</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -2261,8 +2261,10 @@ function setROPFilter(modo){
    filtro a Firebase para que el equipo vea exactamente la misma selección. */
 function congelarSeleccion(){
   if(!DATA.ruta||!DATA.ruta.length){alert('No hay ruta para guardar. Ejecuta el análisis primero.');return;}
-  const pal=DATA.ruta.reduce((a,r)=>a+(r.tkPal||0),0);
-  const nTar=DATA.ruta.length;
+  // Total DESPACHABLE (sin "sin puesto"), para que cuadre con el cuadro de categorías
+  const entregable=DATA.ruta.filter(r=>r.catBODYM!=='SP');
+  const pal=entregable.reduce((a,r)=>a+(r.tkPal||0),0);
+  const nTar=entregable.length;
   if(!confirm('¿Guardar/congelar la selección actual como la ruta oficial del día?\n\n'+nTar+' tareas · '+pal+' paletas.\n\nEl Seguimiento y el equipo usarán exactamente esta selección (se evita que se agreguen de más).'))return;
   DATA.rutaCongelada={ts:Date.now(),ropFilter:DATA.ropFilter||'mixto',pisosExc:[...(DATA.ropPisosExcluidos||[])],pal,tareas:nTar};
   histSaveSnapshot(true);                              // re-captura el snapshot con la selección filtrada
@@ -2302,8 +2304,9 @@ function downloadROPResumenPNG(){
     ['BO',catPal(demTasks,'BO'),catBul(demTasks,'BO'),'#757575'],
     ['DYM',catPal(demTasks,'DYM'),catBul(demTasks,'DYM'),'#9E9E9E'],
   ];
-  if(catPal(ropSel,'SP')>0||catBul(ropSel,'SP')>0)rows.push(['ROP SIN PUESTO',catPal(ropSel,'SP'),catBul(ropSel,'SP'),'#CFD8DC']);
-  if(catPal(demTasks,'SP')>0||catBul(demTasks,'SP')>0)rows.push(['SIN PUESTO',catPal(demTasks,'SP'),catBul(demTasks,'SP'),'#B0BEC5']);
+  // "Sin puesto" NO se incluye en el PNG ni en el total (solo se anota aparte)
+  const spPalPNG=catPal(ropSel,'SP')+catPal(demTasks,'SP');
+  const spBulPNG=catBul(ropSel,'SP')+catBul(demTasks,'SP');
   const totPal=rows.reduce((a,r)=>a+r[1],0);
   const totBul=rows.reduce((a,r)=>a+r[2],0);
 
@@ -2376,7 +2379,7 @@ function downloadROPResumenPNG(){
   ctx.fillStyle='rgba(255,255,255,.85)';ctx.font='13px Arial';ctx.textAlign='left';
   ctx.fillText('BO = Bulto Original (zonas 15,24,25,46,A,B,C,D)',30,H-footH+28);
   ctx.fillText('DYM = Detal y Menudeo (zonas E a P)',30,H-footH+50);
-  ctx.fillText('ROP BO/DYM = reposición preventiva R109 · BO/DYM = demanda R120',30,H-footH+72);
+  ctx.fillText('ROP BO/DYM = reposición preventiva R109 · BO/DYM = demanda R120'+(spPalPNG>0?'  ·  Sin puesto excluidas: '+fN(spPalPNG)+' pal':''),30,H-footH+72);
 
   cv.toBlob(blob=>{
     const url=URL.createObjectURL(blob);
@@ -2528,9 +2531,11 @@ function renderROPTab(c){
   const ropBObul=catBul(ropSelTasks,'BO'),ropDYMbul=catBul(ropSelTasks,'DYM');
   const demBOpal=catPal(demTasks,'BO'),demDYMpal=catPal(demTasks,'DYM');
   const demBObul=catBul(demTasks,'BO'),demDYMbul=catBul(demTasks,'DYM');
-  const demSPpal=catPal(demTasks,'SP'),demSPbul=catBul(demTasks,'SP');   // Sin puesto (demanda)
-  const ropSPpal=catPal(ropSelTasks,'SP'),ropSPbul=catBul(ropSelTasks,'SP');
-  const totalPalTabla=ropBOpal+ropDYMpal+demBOpal+demDYMpal+demSPpal+ropSPpal;
+  // "Sin puesto": se EXCLUYE del cuadro y del total (no es despachable). Solo se muestra el conteo aparte.
+  const spPalTotal=catPal(demTasks,'SP')+catPal(ropSelTasks,'SP');
+  const spBulTotal=catBul(demTasks,'SP')+catBul(ropSelTasks,'SP');
+  const spTarTotal=(demTasks.filter(t=>t.catBODYM==='SP').length)+(ropSelTasks.filter(t=>t.catBODYM==='SP').length);
+  const totalPalTabla=ropBOpal+ropDYMpal+demBOpal+demDYMpal;   // SIN incluir SP
 
   h+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">';
   h+='<div style="flex:0 0 auto"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap"><div style="font-size:12px;font-weight:700;color:#001E62">📊 RESUMEN DE PALETAS POR CATEGORÍA</div>';
@@ -2556,19 +2561,22 @@ function renderROPTab(c){
   h+=filaCat('ROP DYM',ropDYMpal,ropDYMbul,'#A1887F','#fff');
   h+=filaCat('BO',demBOpal,demBObul,'#757575','#fff');
   h+=filaCat('DYM',demDYMpal,demDYMbul,'#9E9E9E','#fff');
-  if(ropSPpal>0||ropSPbul>0)h+=filaCat('ROP SIN PUESTO',ropSPpal,ropSPbul,'#CFD8DC','#37474F');
-  if(demSPpal>0||demSPbul>0)h+=filaCat('SIN PUESTO',demSPpal,demSPbul,'#B0BEC5','#37474F');
   h+='<tr><td style="background:#37474F;color:#fff;font-weight:800;padding:8px 16px;border:1px solid #333;text-align:center">TOTAL</td>'
     +'<td style="background:#cc0000;color:#fff;font-weight:800;padding:8px 20px;border:1px solid #333;text-align:center;font-size:16px">'+fN(totalPalTabla)+'</td>'
-    +'<td style="background:#37474F;color:#fff;padding:8px 16px;border:1px solid #333;text-align:center">'+fN(ropBObul+ropDYMbul+demBObul+demDYMbul+demSPbul+ropSPbul)+' bul</td></tr>';
-  h+='</tbody></table></div></div>';
+    +'<td style="background:#37474F;color:#fff;padding:8px 16px;border:1px solid #333;text-align:center">'+fN(ropBObul+ropDYMbul+demBObul+demDYMbul)+' bul</td></tr>';
+  h+='</tbody></table>';
+  // Esquinita FUERA del cuadro: conteo de "sin puesto" (excluidas del total)
+  if(spPalTotal>0||spTarTotal>0){
+    h+='<div style="margin-top:6px;font-size:11px;color:#607D8B;font-weight:600">🚫 '+fN(spTarTotal)+' tarea(s) sin puesto de despacho ('+fN(spPalTotal)+' pal · '+fN(spBulTotal)+' bul) — excluidas del total (no despachables).</div>';
+  }
+  h+='</div></div>';
   h+='<div style="flex:1;min-width:200px;background:#F5F7FB;border-radius:8px;padding:12px;font-size:12px;color:#555">';
   h+='<b>Leyenda:</b><br>';
   h+='<span style="color:#8D6E63;font-weight:700">ROP BO/DYM</span> = paletas de reposición preventiva (R109), según el filtro seleccionado arriba.<br>';
   h+='<span style="color:#757575;font-weight:700">BO/DYM</span> = paletas de demanda (R120).<br><br>';
   h+='<b>BO</b> = Bulto Original (zonas 15,24,25,46,A,B,C,D)<br>';
-  h+='<b>DYM</b> = Detal y Menudeo (zonas E a P)<br>';
-  h+='<b>SIN PUESTO</b> = ítems de la demanda sin puesto/zona de despacho. No son despachables y su paleta no es real (bulto = paleta). Se separan para no inflar el DYM — revísalos aparte.';
+  h+='<b>DYM</b> = Detal y Menudeo (zonas E a P)<br><br>';
+  h+='<span style="color:#607D8B;font-weight:700">🚫 Sin puesto</span> = ítems sin puesto/zona de despacho (no despachables). <b>No entran en el cuadro ni en el total</b>; el conteo se muestra aparte, debajo de la tabla.';
   h+='</div>';
   h+='</div>';
 
@@ -4537,7 +4545,8 @@ async function repoApplyManifest(man, force){
       DATA.ropFilter=man.filter.ropFilter||'mixto';
       DATA.ropPisosExcluidos=new Set(man.filter.pisosExc||[]);
       aplicarFiltroROP(DATA.ropFilter,DATA.rutaDemanda);
-      DATA.rutaCongelada={ts:man.filter.ts||Date.now(),ropFilter:DATA.ropFilter,pisosExc:[...DATA.ropPisosExcluidos],pal:(DATA.ruta||[]).reduce((a,r)=>a+(r.tkPal||0),0),tareas:(DATA.ruta||[]).length};
+      const _entr=(DATA.ruta||[]).filter(r=>r.catBODYM!=='SP');
+      DATA.rutaCongelada={ts:man.filter.ts||Date.now(),ropFilter:DATA.ropFilter,pisosExc:[...DATA.ropPisosExcluidos],pal:_entr.reduce((a,r)=>a+(r.tkPal||0),0),tareas:_entr.length};
       if(typeof histSaveSnapshot==='function')histSaveSnapshot(true);   // snapshot local = selección congelada
     }
     DATA._fromSync=false;
