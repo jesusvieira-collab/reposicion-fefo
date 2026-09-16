@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v26 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v27 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v26 — "Sin puesto" fuera del cuadro y del total (conteo aparte) · ruta ajustada vs base completa · Guardar/Congelar · balanceo por pasillo · histórico trimestral</p>
+  <p>Farmatodo · CENDIS Charallave · v27 — desglose BO/DYM+PNG en dashboard · seguimiento: R031 con más unidades = ejecutada · filtro Con/Sin ROP · ruta ajustada vs base completa · Guardar/Congelar · histórico trimestral</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -3005,6 +3005,33 @@ function renderDashboard(c){
     }
     h+='</div>';
   }
+
+  // ── DESGLOSE BO / DYM (paletas + bultos) del día + descarga PNG ──
+  (function(){
+    const demT=DATA.rutaDemanda||[];
+    const cP=(ts,c)=>ts.filter(t=>t.catBODYM===c).reduce((a,t)=>a+(t.tkPal||0),0);
+    const cB=(ts,c)=>ts.filter(t=>t.catBODYM===c).reduce((a,t)=>a+(t.tkB||0),0);
+    const pExc=DATA.ropPisosExcluidos||new Set();const fM=DATA.ropFilter||'mixto';
+    const ropSel=(DATA.ropRutaTasks||[]).filter(t=>{const ok=!pExc.has(getPisoZona(t.zD));if(fM==='rop')return t.esROP;if(fM==='saldo')return t.esSaldo&&!t.esROP&&ok;return t.esROP||(t.esSaldo&&ok);});
+    const boP=cP(demT,'BO'),dyP=cP(demT,'DYM'),boB=cB(demT,'BO'),dyB=cB(demT,'DYM');
+    const rboP=cP(ropSel,'BO'),rdyP=cP(ropSel,'DYM'),rboB=cB(ropSel,'BO'),rdyB=cB(ropSel,'DYM');
+    const spP=cP(demT,'SP')+cP(ropSel,'SP'),spTar=demT.filter(t=>t.catBODYM==='SP').length+ropSel.filter(t=>t.catBODYM==='SP').length;
+    const totP=boP+dyP+rboP+rdyP,totB=boB+dyB+rboB+rdyB;
+    const hayROP=(rboP+rdyP+rboB+rdyB)>0;
+    if(totP<=0&&totB<=0)return;
+    const fila=(l,p,b,bg)=>'<tr><td style="padding:5px 9px;font-weight:800;background:'+bg+';color:#fff;border:1px solid #ccc">'+l+'</td><td style="padding:5px 9px;text-align:right;font-weight:800;border:1px solid #ccc">'+fN(p)+' pal</td><td style="padding:5px 9px;text-align:right;color:#666;border:1px solid #ccc">'+fN(b)+' bul</td></tr>';
+    let x='<div style="margin-top:12px;padding:10px;background:#F5F7FB;border-radius:8px;border:1px solid #d5deea">';
+    x+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap"><div style="font-size:11px;font-weight:700;color:#555">📦 DESGLOSE BO / DYM (paletas · bultos)</div>';
+    x+='<button onclick="downloadROPResumenPNG()" style="background:#2e7d32;color:#fff;border:none;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer">📷 Descargar PNG</button></div>';
+    x+='<table style="width:100%;border-collapse:collapse;font-size:12.5px">';
+    x+=fila('BO',boP,boB,'#757575')+fila('DYM',dyP,dyB,'#9E9E9E');
+    if(hayROP)x+=fila('ROP BO',rboP,rboB,'#8D6E63')+fila('ROP DYM',rdyP,rdyB,'#A1887F');
+    x+='<tr><td style="padding:5px 9px;font-weight:800;background:#37474F;color:#fff;border:1px solid #ccc">TOTAL</td><td style="padding:5px 9px;text-align:right;font-weight:800;background:#cc0000;color:#fff;border:1px solid #ccc">'+fN(totP)+' pal</td><td style="padding:5px 9px;text-align:right;background:#37474F;color:#fff;border:1px solid #ccc">'+fN(totB)+' bul</td></tr>';
+    x+='</table>';
+    if(spP>0||spTar>0)x+='<div style="margin-top:5px;font-size:10px;color:#607D8B;font-weight:600">🚫 '+fN(spTar)+' sin puesto ('+fN(spP)+' pal) — excluidas del total (no despachables).</div>';
+    x+='</div>';
+    h+=x;
+  })();
   const pctOK=DATA.tI>0?Math.round(DATA.tOK/DATA.tI*100):0;
   const pctP=DATA.tI>0?Math.round(DATA.tP/DATA.tI*100):0;
   const pctSS=DATA.tI>0?Math.round(DATA.tSS/DATA.tI*100):0;
@@ -3854,6 +3881,27 @@ function segCruzar(ruta,b033,a033,b031,a031){
     const pas=t.origen==='ROP'&&t.pasilloROP?String(t.pasilloROP):segPasAlm(t.ubic);
     const o={...t,pasSeg:pas,delta33,delta31:0,inv31Base:0,inv31Act:0,confirmadoEn:'',puestoReal:t.puesto,invPtoAct:t.invPto??0};
 
+    // R031: ¿el puesto ganó unidades de este ítem respecto al inicio?
+    let d31=0,i31b=0,i31a=0;
+    if(modoCompleto){
+      const kp=t.item+'|'+segNormKey(t.puesto);
+      i31b=segPuestoValido(t.puesto)?(b031.map[kp]??0):0;
+      i31a=segPuestoValido(t.puesto)?(a031.map[kp]??0):0;
+      d31=i31a-i31b;
+      o.inv31Base=i31b;o.inv31Act=i31a;o.delta31=d31;o.invPtoAct=i31a;
+    }
+    // REGLA (criterio del usuario): si el puesto tiene MÁS unidades del ítem que al inicio →
+    // EJECUTADA, AUNQUE la paleta siga figurando en almacenaje (R033).
+    if(modoCompleto&&d31>0){
+      o.estado='EJECUTADO';o.confirmadoEn='asignado';
+      o.evidencia=(delta33>0?'✅ Bajó '+fN(delta33)+' del almacén · ':'✅ ')+
+        'puesto '+t.puesto+' subió '+fN(i31b)+'→'+fN(i31a)+' (+'+fN(d31)+')'+
+        (delta33<=0?' · (la paleta aún figura en almacenaje)':'');
+      ej++;ejAsignado++;
+      itemPool[t.item]=(itemPool[t.item]??0)-d31;
+      return o;
+    }
+    // Sin ganancia en el puesto:
     if(delta33<=0){
       o.estado='PENDIENTE';
       o.evidencia=udsBase===0
@@ -3863,24 +3911,12 @@ function segCruzar(ruta,b033,a033,b031,a031){
       pen++;
       return o;
     }
-    // La paleta salió del almacén
+    // La paleta salió del almacén pero el puesto no ganó:
     if(!modoCompleto){
       o.estado='PARCIAL';o.evidencia='🟡 Bajó '+fN(delta33)+' del almacén · destino no verificado (sin R031 actual)';par++;
       return o;
     }
-    const kp=t.item+'|'+segNormKey(t.puesto);
-    const i31b=segPuestoValido(t.puesto)?(b031.map[kp]??0):0;
-    const i31a=segPuestoValido(t.puesto)?(a031.map[kp]??0):0;
-    const d31=i31a-i31b;
-    o.inv31Base=i31b;o.inv31Act=i31a;o.delta31=d31;o.invPtoAct=i31a;
-    if(d31>0){
-      o.estado='EJECUTADO';o.confirmadoEn='asignado';
-      o.evidencia='✅ Bajó '+fN(delta33)+' · confirmado en puesto '+t.puesto+': '+fN(i31b)+'→'+fN(i31a)+' (+'+fN(d31)+')';
-      ej++;ejAsignado++;
-      itemPool[t.item]=(itemPool[t.item]??0)-d31; // esa confirmación ya se usó
-      return o;
-    }
-    o.estado='__MOVIDO_SIN_CONFIRMAR__'; // se resuelve en el paso 2
+    o.estado='__MOVIDO_SIN_CONFIRMAR__'; // se resuelve en el paso 2 (doble mapeo)
     return o;
   });
 
@@ -3977,6 +4013,8 @@ function segPick(key,el){
   const rb=document.getElementById('segRunBtn');if(rb)rb.disabled=false;
 }
 function segSetRuta(v){DATA.segRutaKey=v;}
+function segToggleROP(sinROP){DATA.segSinROP=!!sinROP;if(DATA.seg)segEjecutar();else if(typeof renderTab==='function')renderTab();}
+window.segToggleROP=segToggleROP;
 
 /* ── Ruta AJUSTADA: adjuntar el Excel de "Ruta Operador" (editado por el equipo)
    para rastrear contra la ruta EXACTA que se mandó a bajar ─────────────────── */
@@ -4038,8 +4076,10 @@ window.segPickRutaAjustada=segPickRutaAjustada;window.segQuitarRutaAjustada=segQ
 
 /* ── Ejecutar cruce ────────────────────────────────────────────────────── */
 async function segEjecutar(){
-  const {rows:ruta,snap}=segGetSelected();
-  if(!ruta.length)return alert('No hay ruta para rastrear. Genere un análisis o seleccione un archivo del histórico.');
+  const {rows:rutaRaw,snap}=segGetSelected();
+  // Filtro Con/Sin ROP: excluye las tareas de ROP (R109) del cálculo si está activo
+  const ruta=DATA.segSinROP?rutaRaw.filter(r=>!(r.esROP||r.origen==='ROP')):rutaRaw;
+  if(!ruta.length)return alert(DATA.segSinROP?'No hay tareas (sin ROP) para rastrear. Prueba "Con ROP".':'No hay ruta para rastrear. Genere un análisis o seleccione un archivo del histórico.');
   const fA033=FILES.seg033act;
   const tieneBaseTanda=!!(snap&&snap.base&&snap.base.b033);
   const fB033=FILES.seg033base||FILES.r033;
@@ -4122,7 +4162,13 @@ function renderSeguimientoTab(c){
     h+='<div class="seg-rutasel"><label>Ruta a rastrear</label><select onchange="segSetRuta(this.value)">';
     const cur=DATA.segRutaKey||(DATA.ruta&&DATA.ruta.length?'__actual':(rutaOpts[0]||{}).key);
     rutaOpts.forEach(o=>h+='<option value="'+o.key+'"'+(o.key===cur?' selected':'')+'>'+o.label+'</option>');
-    h+='</select></div>';
+    h+='</select>';
+    // Filtro Con/Sin ROP para el seguimiento (útil en el rechequeo después de las 9 pm)
+    const sinROP=!!DATA.segSinROP;
+    h+='<span style="width:1px;height:24px;background:#ccd"></span><label>Tareas ROP</label>';
+    h+='<button type="button" onclick="segToggleROP(false)" style="padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;border:1.5px solid #149980;'+(!sinROP?'background:#149980;color:#fff':'background:#fff;color:#149980')+'">Con ROP</button>';
+    h+='<button type="button" onclick="segToggleROP(true)" style="padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;border:1.5px solid #C62828;'+(sinROP?'background:#C62828;color:#fff':'background:#fff;color:#C62828')+'">Sin ROP</button>';
+    h+='</div>';
   }else{
     h+='<div class="seg-hint" style="color:#cc0000">No hay ruta disponible. Ejecute un análisis FEFO primero.</div>';
   }
