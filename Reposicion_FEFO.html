@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v27 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v30 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v27 — desglose BO/DYM+PNG en dashboard · seguimiento: R031 con más unidades = ejecutada · filtro Con/Sin ROP · ruta ajustada vs base completa · Guardar/Congelar · histórico trimestral</p>
+  <p>Farmatodo · CENDIS Charallave · v30 — seguimiento: espejo de rechequeo (2ª ruta) · avance por zona · desglose BO/DYM ejec vs faltantes · detal por R031 · filtro Con/Sin ROP · Guardar/Congelar · histórico trimestral</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -3759,6 +3759,25 @@ function segPasAlm(ubic){
   if(!u||!/^\d/.test(u))return'';
   return u.length>=8?u.substring(0,2):u.substring(0,1);
 }
+// Clasificación de pasillos en ZONAS (para el avance por zona)
+const SEG_ZONAS=[
+  {nombre:'1 al 14',pas:[1,3,4,5,6,7,8,14]},
+  {nombre:'Estantería alta',pas:[9,10,11,12,13]},
+  {nombre:'20 al 23',pas:[20,21,22,23]},
+  {nombre:'Overstock medicina',pas:[30,31,32,33,34,35,36,40]},
+  {nombre:'Detal y Medicina',pas:[41,42,43,44]}
+];
+function segZonaDe(pasSeg){
+  if(!pasSeg)return 'Detal s/ubic';
+  const n=parseInt(pasSeg,10);
+  for(const z of SEG_ZONAS)if(z.pas.includes(n))return z.nombre;
+  return 'Otros';
+}
+function segZonaOrden(nombre){
+  const i=SEG_ZONAS.findIndex(z=>z.nombre===nombre);
+  if(i>=0)return i;
+  return nombre==='Otros'?90:(nombre==='Detal s/ubic'?99:50);
+}
 function segPuestoValido(p){
   const u=s(p).toUpperCase().replace(/\s+/g,'');
   return !(u===''||u==='SINP/D'||u==='SIND/P'||u==='N/A'||u==='SINPUESTO'||u==='NA');
@@ -4043,14 +4062,21 @@ async function segParseRutaAjustada(file){
     const origenRaw=cor>=0?s(r[cor]).toUpperCase():'';
     const esROP=/ROP/.test(origenRaw);
     const ubic=cu>=0?s(r[cu]):'';
+    const puesto=cpu>=0?s(r[cpu]):'';
+    const zD=cz>=0?s(r[cz]):'';
+    // catBODYM desde la zona destino (para el desglose BO/DYM del seguimiento)
+    const zdU=zD.toUpperCase().trim();const p1=zdU.charAt(0);
+    const esBO=['15','24','25','46'].includes(zdU)||(['A','B','C','D'].includes(p1)&&zdU.length<=2);
+    const esSinP=/^sin\b/i.test(puesto.trim())||/^sin\b/i.test(zdU)||zdU===''||zdU==='SIN ZONA';
+    const cat=esSinP?'SP':(esBO?'BO':'DYM');
     rows.push({
       item,desc:cd>=0?s(r[cd]):'',ubic,zA:'',lote:cl>=0?s(r[cl]):'',fv:null,prio:2,
       tkU:0,tkB,tkPal:tkPal||(tkB>0?1:0),
-      zD:cz>=0?s(r[cz]):'',puesto:cpu>=0?s(r[cpu]):'',isE:false,
+      zD,puesto,isE:false,
       operador:cop>=0?s(r[cop]):'',modoLabel:'',origen:esROP?'ROP':'DEMANDA',
       tipoTarea:esROP?'ROP':'DEMANDA',invPto:cip>=0?v(r[cip]):0,invDisp:cip>=0?v(r[cip]):0,
       pasilloROP:cpr>=0?s(r[cpr]):(esROP?ubic.substring(0,2):undefined),
-      esROP,esSaldo:false,catBODYM:''
+      esROP,esSaldo:false,catBODYM:cat
     });
   });
   return rows;
@@ -4073,6 +4099,46 @@ function segQuitarRutaAjustada(){
   if(typeof renderTab==='function')renderTab();
 }
 window.segPickRutaAjustada=segPickRutaAjustada;window.segQuitarRutaAjustada=segQuitarRutaAjustada;
+
+/* ── ESPEJO DE RECHEQUEO: 2ª ruta ajustada vs la 1ª ─────────────────────────
+   Regla del usuario:
+   1) Tarea (ítem+puesto) que estaba en la 1ª ruta y YA NO aparece en el
+      rechequeo (2ª) = se hizo → EJECUTADA.
+   2) Si sigue en ambas, se usa la ubicación del RECHEQUEO (por si la paleta se
+      reubicó) para cruzar contra el R033/R031 del corte.
+   3) El filtro Con/Sin ROP se aplica igual (excluye R109 si "Sin ROP"). */
+async function segPickRechequeo(el){
+  const f=el.files[0];if(!f)return;el.value='';
+  try{
+    const rows=await segParseRutaAjustada(f);
+    if(!rows.length){alert('No se leyeron filas del rechequeo.');return;}
+    DATA.segRutaRech={name:f.name,rows,ts:Date.now(),tareas:rows.length};
+    if(typeof renderTab==='function')renderTab();
+    alert('✓ Rechequeo (2ª tanda) cargado: '+fN(rows.length)+' tareas.\nAl calcular avance se hará el ESPEJO contra la 1ª ruta ajustada: lo que estaba antes y ya no aparece = ejecutado.');
+  }catch(e){alert('No se pudo leer el rechequeo: '+e.message);}
+}
+function segQuitarRechequeo(){DATA.segRutaRech=null;if(typeof renderTab==='function')renderTab();}
+window.segPickRechequeo=segPickRechequeo;window.segQuitarRechequeo=segQuitarRechequeo;
+
+function segEspejo(rutaT1,rutaRech,b033,a033,b031,a031){
+  const rechMap={};
+  (rutaRech||[]).forEach(t=>{const k=t.item+'|'+segNormKey(t.puesto);if(!rechMap[k])rechMap[k]=t;});
+  const pres=[],desap=[];
+  (rutaT1||[]).forEach(t=>{
+    const k=t.item+'|'+segNormKey(t.puesto);
+    const r=rechMap[k];
+    if(r){ pres.push({...t,ubic:(r.ubic||t.ubic),lote:((r.lote!==undefined&&r.lote!=='')?r.lote:t.lote)}); }  // criterio 2: ubic del rechequeo
+    else desap.push(t);   // criterio 1: desapareció del rechequeo → ejecutada
+  });
+  const res=segCruzar(pres,b033,a033,b031,a031);
+  desap.forEach(t=>{
+    const pas=(t.origen==='ROP'&&t.pasilloROP)?String(t.pasilloROP):segPasAlm(t.ubic);
+    res.snap.push({...t,pasSeg:pas,estado:'EJECUTADO',delta33:0,delta31:0,inv31Base:0,inv31Act:0,invPtoAct:0,confirmadoEn:'rechequeo',puestoReal:t.puesto,evidencia:'✅ Ya no aparece en el rechequeo (2ª tanda) → ejecutada'});
+    res.ej++;
+  });
+  res.total=res.snap.length;res.espejo=true;res.desapCount=desap.length;res.presCount=pres.length;
+  return res;
+}
 
 /* ── Ejecutar cruce ────────────────────────────────────────────────────── */
 async function segEjecutar(){
@@ -4101,7 +4167,15 @@ async function segEjecutar(){
       else { const fB031=FILES.seg031base||FILES.r031; if(fB031)b031=await segParseR031(fB031); }
       if(b031)a031=await segParseR031(fA031);
     }
-    const res=segCruzar(ruta,b033,a033,b031,a031);
+    let res;
+    if(DATA.segRutaRech&&DATA.segRutaRech.rows&&DATA.segRutaRech.rows.length){
+      // Espejo: comparar la ruta (1ª) contra el rechequeo (2ª)
+      let rech=DATA.segRutaRech.rows;
+      if(DATA.segSinROP)rech=rech.filter(r=>!(r.esROP||r.origen==='ROP'));
+      res=segEspejo(ruta,rech,b033,a033,b031,a031);
+    }else{
+      res=segCruzar(ruta,b033,a033,b031,a031);
+    }
     res.baseTanda=tieneBaseTanda;
     if(snap)res.tandaLabel=turnoLabel(snap.turno)+' · '+fFechaES(snap.fecha);
     DATA.seg=res;
@@ -4117,7 +4191,10 @@ const SEG_BAR={ej:{stroke:'#3aab8f',fill:'#d6f3ea',hatch:'#3aab8f',lbl:'#0f4a38'
   pen:{stroke:'#d44848',fill:'#fce4e4',hatch:'#d44848',lbl:'#5c1010'}};
 function segBars(items,idpfx){
   if(!items.length)return'<div class="seg-empty">Sin datos.</div>';
-  items=[...items].sort((a,b)=>Number(a.label)-Number(b.label)||String(a.label).localeCompare(String(b.label)));
+  items=[...items].sort((a,b)=>{
+    if(a.ord!=null&&b.ord!=null)return a.ord-b.ord;
+    return Number(a.label)-Number(b.label)||String(a.label).localeCompare(String(b.label));
+  });
   const BH=22,ARROW=11,GAP=9,LW=54,IW=430,MW=120,W=LW+IW+ARROW+MW;
   let out='';
   items.forEach((it,i)=>{
@@ -4187,6 +4264,20 @@ function renderSeguimientoTab(c){
   }
   h+='</div>';
 
+  // Adjuntar RECHEQUEO (2ª ruta ajustada) — espejo contra la 1ª
+  h+='<div style="margin:8px 0;padding:10px 12px;background:#EDE7F6;border:1.5px dashed #6A1B9A;border-radius:8px">';
+  if(DATA.segRutaRech){
+    h+='<div style="font-size:12px;font-weight:700;color:#4527A0;margin-bottom:4px">🔁 Espejo de rechequeo activo (2ª tanda)</div>';
+    h+='<div style="font-size:11.5px;color:#555;margin-bottom:8px">'+esc(DATA.segRutaRech.name)+' · '+fN(DATA.segRutaRech.tareas)+' tareas. Lo que estaba en la 1ª ruta y ya <b>no aparece aquí</b> = ejecutado. Lo que sigue, se rastrea con la ubicación del rechequeo.</div>';
+    h+='<label class="seg-btn" style="background:#6A1B9A">Reemplazar<input type="file" accept=".xlsx,.xls" onchange="segPickRechequeo(this)"></label> ';
+    h+='<button onclick="segQuitarRechequeo()" style="background:#fff;color:#C62828;border:1.5px solid #C62828;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;margin-left:6px">Quitar</button>';
+  }else{
+    h+='<div style="font-size:12px;font-weight:700;color:#4527A0;margin-bottom:4px">🔁 ¿Hiciste rechequeo? Adjunta la 2ª ruta (espejo)</div>';
+    h+='<div style="font-size:11.5px;color:#555;margin-bottom:8px">Sube la ruta ajustada del <b>rechequeo</b>. Comparo contra la 1ª: lo que ya no aparece = ejecutado, y lo que sigue se cruza con el R033/R031 del corte.</div>';
+    h+='<label class="seg-btn" style="background:#6A1B9A">Adjuntar rechequeo (2ª ruta)<input type="file" accept=".xlsx,.xls" onchange="segPickRechequeo(this)"></label>';
+  }
+  h+='</div>';
+
   // ¿La tanda seleccionada trae su propia base guardada? (para rastrear ese día/turno)
   const _sel=segGetSelected();
   const tandaBase033=!!(_sel.snap&&_sel.snap.base&&_sel.snap.base.b033);
@@ -4236,6 +4327,9 @@ function renderSeguimientoTab(c){
   /* Progreso global */
   h+='<div class="seg-progcard">';
   h+='<div class="seg-progtop"><div><div class="seg-progpct">'+pMov+'<span>% movido del almacén</span></div><div class="seg-progsub">'+pEj+'% confirmado en puesto · corte '+g.hora+(g.modoCompleto?'':' · sin R031 actual (no se confirma puesto)')+'</div></div></div>';
+  if(g.espejo){
+    h+='<div style="margin:0 0 10px;padding:8px 12px;background:#EDE7F6;border-left:5px solid #6A1B9A;border-radius:8px;font-size:12px;color:#4527A0;font-weight:600">🔁 Espejo de rechequeo activo: <b>'+fN(g.desapCount||0)+'</b> tarea(s) que estaban en la 1ª ruta ya no aparecen en el rechequeo → contadas como <b>ejecutadas</b>. Las <b>'+fN(g.presCount||0)+'</b> que siguen se cruzan con el R033/R031 del corte.</div>';
+  }
   const trkClr=pMov>=90?'linear-gradient(90deg,#2e7d32,#4CAF50)':pMov>=50?'linear-gradient(90deg,#001E62,#418FDE)':'linear-gradient(90deg,#c00000,#E65100)';
   h+='<div class="seg-track"><div style="width:'+pMov+'%;background:'+trkClr+'"></div></div>';
   h+='<div class="seg-kpis">';
@@ -4263,18 +4357,41 @@ function renderSeguimientoTab(c){
   h+='</div>';
 
   /* Charts: por pasillo + por operador */
-  const byP={};snap.forEach(r=>{const p=r.pasSeg||'??';if(!byP[p])byP[p]={label:p,ej:0,par:0,pen:0};byP[p][r.estado==='EJECUTADO'?'ej':r.estado==='PARCIAL'?'par':'pen']++;});
-  const itemsP=Object.values(byP);
+  // Las tareas de DETAL sin ubicación de almacenaje (ubic vacía) se agrupan aparte
+  // como "Detal s/ubic" (se rastrean por el R031/puesto, no por pasillo de almacenaje).
+  const byP={};snap.forEach(r=>{const raw=r.pasSeg||'';const p=raw||'__DETAL__';if(!byP[p])byP[p]={label:raw||'Detal s/ubic',pfx:raw?'P':'',det:!raw,ej:0,par:0,pen:0};byP[p][r.estado==='EJECUTADO'?'ej':r.estado==='PARCIAL'?'par':'pen']++;});
+  const itemsP=Object.values(byP).sort((a,b)=>{if(a.det!==b.det)return a.det?1:-1;return String(a.label).localeCompare(String(b.label),undefined,{numeric:true});});
   const byO={};snap.forEach(r=>{const o=r.operador||'__';if(!byO[o])byO[o]={op:o,total:0,ej:0,par:0,pen:0,bul:0,pas:new Set()};const g2=byO[o];g2.total++;g2.bul+=r.tkB||0;g2.pas.add(r.pasSeg);g2[r.estado==='EJECUTADO'?'ej':r.estado==='PARCIAL'?'par':'pen']++;});
   const opsArr=Object.values(byO).filter(o=>o.total);
 
   h+='<div class="seg-two">';
-  h+='<div class="seg-chartcard"><h4>Avance por pasillo de almacenaje</h4><div class="csub">'+itemsP.length+' pasillo(s) · corte '+g.hora+'</div><div class="seg-legend">'+segLegend()+'</div>'+segBars(itemsP.map(x=>({...x,pfx:'P'})),'sp')+'</div>';
+  h+='<div class="seg-chartcard"><h4>Avance por pasillo de almacenaje</h4><div class="csub">'+itemsP.length+' pasillo(s) · corte '+g.hora+'</div><div class="seg-legend">'+segLegend()+'</div>'+segBars(itemsP,'sp')+'</div>';
   if(opsArr.length){
     const itemsO=opsArr.map(o=>({label:(SEG_OPLBL[o.op]||(o.op==='__'?'Sin asignar':o.op)),ej:o.ej,par:o.par,pen:o.pen,pfx:''}));
     h+='<div class="seg-chartcard"><h4>Avance por operador</h4><div class="csub">'+opsArr.length+' operador(es) · corte '+g.hora+'</div><div class="seg-legend">'+segLegend()+'</div>'+segBars(itemsO,'so')+'</div>';
   }
   h+='</div>';
+
+  // ── Avance por ZONA (agrupación de pasillos) ──
+  const byZ={};snap.forEach(r=>{const z=segZonaDe(r.pasSeg);if(!byZ[z])byZ[z]={label:z,pfx:'',ord:segZonaOrden(z),ej:0,par:0,pen:0};byZ[z][r.estado==='EJECUTADO'?'ej':r.estado==='PARCIAL'?'par':'pen']++;});
+  h+='<div class="seg-chartcard" style="margin-top:12px"><h4>📍 Avance por zona</h4><div class="csub">corte '+g.hora+'</div><div class="seg-legend">'+segLegend()+'</div>'+segBars(Object.values(byZ),'sz')+'</div>';
+
+  // ── Desglose BO / DYM: ejecutadas vs faltantes (paletas · bultos) ──
+  (function(){
+    const cA=cat=>{const rs=snap.filter(r=>r.catBODYM===cat);const f=(st,fn)=>rs.filter(st).reduce((a,r)=>a+(fn(r)||0),0);
+      return{ejP:f(r=>r.estado==='EJECUTADO',r=>r.tkPal),ejB:f(r=>r.estado==='EJECUTADO',r=>r.tkB),faP:f(r=>r.estado!=='EJECUTADO',r=>r.tkPal),faB:f(r=>r.estado!=='EJECUTADO',r=>r.tkB),n:rs.length};};
+    const bo=cA('BO'),dy=cA('DYM'),sp=cA('SP');
+    if(bo.n+dy.n+sp.n===0)return;
+    const fila=(l,d,bg)=>'<tr><td style="padding:6px 10px;font-weight:800;background:'+bg+';color:#fff;border:1px solid #ccc">'+l+'</td>'+
+      '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;color:#0f4a38;font-weight:700">'+fN(d.ejP)+' pal · '+fN(d.ejB)+' bul</td>'+
+      '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;color:#c00;font-weight:700">'+fN(d.faP)+' pal · '+fN(d.faB)+' bul</td></tr>';
+    let x='<div class="seg-chartcard" style="margin-top:12px"><h4>📦 Desglose BO / DYM — ejecutadas vs faltantes</h4>';
+    x+='<table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr style="background:#001E62;color:#fff"><th style="padding:6px 10px;border:1px solid #ccc">Categoría</th><th style="padding:6px 10px;border:1px solid #ccc">✅ Ejecutadas</th><th style="padding:6px 10px;border:1px solid #ccc">⏳ Faltan por bajar</th></tr></thead><tbody>';
+    x+=fila('BO',bo,'#757575')+fila('DYM',dy,'#9E9E9E');
+    if(sp.n>0)x+=fila('Sin puesto',sp,'#B0BEC5');
+    x+='</tbody></table></div>';
+    h+=x;
+  })();
 
   /* Tarjetas por operador: adelantado / atrasado */
   if(opsArr.length){
