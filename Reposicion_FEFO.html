@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v32 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v33 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v32 — seguimiento: alerta si el R033 base no cruza + R033 base reemplazable · tabla por piso · nombres de zona · espejo de rechequeo · BO/DYM ejec vs faltantes · Con/Sin ROP</p>
+  <p>Farmatodo · CENDIS Charallave · v33 — seguimiento de ruta ajustada SOLO contra el corte (sin base): paleta fuera del R033 = movida, R031 corte confirma puesto · tabla por piso · avance por zona · espejo rechequeo · Con/Sin ROP</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -4120,7 +4120,40 @@ async function segPickRechequeo(el){
 function segQuitarRechequeo(){DATA.segRutaRech=null;if(typeof renderTab==='function')renderTab();}
 window.segPickRechequeo=segPickRechequeo;window.segQuitarRechequeo=segQuitarRechequeo;
 
-function segEspejo(rutaT1,rutaRech,b033,a033,b031,a031){
+/* CRUCE SOLO-CORTE (ruta ajustada como referencia, SIN R033/R031 base de inicio):
+   - Paleta (ítem+ubic) que YA NO está en el R033 del corte = salió del almacén = movida.
+       · con R031 corte y unidades en el puesto → EJECUTADA; puesto vacío → PARCIAL.
+       · sin R031 corte → EJECUTADA (salió).
+   - Paleta que SIGUE en el R033 del corte → PENDIENTE.
+   - Detal (sin ubic): se confirma solo por R031 (puesto con unidades). */
+function segCruzarCorte(ruta,a033,a031){
+  const hasR031=!!(a031&&a031.map);
+  let ej=0,par=0,pen=0;
+  const snap=(ruta||[]).map(t=>{
+    const ubicNorm=segNormKey(t.ubic);
+    const udsC=t.ubic?(a033.mapNoLote[t.item+'|'+ubicNorm]??0):0;
+    const enR033=t.ubic?(udsC>0):false;
+    const invC=(hasR031&&segPuestoValido(t.puesto))?(a031.map[t.item+'|'+segNormKey(t.puesto)]??0):0;
+    const pas=(t.origen==='ROP'&&t.pasilloROP)?String(t.pasilloROP):segPasAlm(t.ubic);
+    const o={...t,pasSeg:pas,delta33:enR033?0:1,delta31:0,inv31Base:0,inv31Act:invC,invPtoAct:invC,puestoReal:t.puesto,confirmadoEn:''};
+    if(!t.ubic){
+      if(hasR031&&invC>0){o.estado='EJECUTADO';o.confirmadoEn='asignado';o.evidencia='✅ Detal · puesto '+t.puesto+' con '+fN(invC)+' und';ej++;}
+      else{o.estado='PENDIENTE';o.evidencia='⏸ Detal · sin confirmar en puesto'+(hasR031?'':' (adjunta R031 corte)');pen++;}
+      return o;
+    }
+    if(!enR033){
+      if(!hasR031){o.estado='EJECUTADO';o.confirmadoEn='asignado';o.evidencia='✅ Ya no está en almacenaje (salió)';ej++;}
+      else if(invC>0){o.estado='EJECUTADO';o.confirmadoEn='asignado';o.evidencia='✅ Salió del almacén · puesto '+t.puesto+': '+fN(invC)+' und';ej++;}
+      else{o.estado='PARCIAL';o.evidencia='🟡 Salió del almacén · puesto '+t.puesto+' aún sin unidades';par++;}
+      return o;
+    }
+    o.estado='PENDIENTE';o.evidencia='⏸ Sigue en almacenaje ('+fN(udsC)+' und)';pen++;
+    return o;
+  });
+  return {snap,ej,par,pen,ejAsignado:ej,ejOtro:0,penNoBase:0,total:snap.length,modoCompleto:hasR031,hora:segNow(),corteOnly:true};
+}
+
+function segEspejo(rutaT1,rutaRech,a033,a031,esAjustada,b033,b031){
   const rechMap={};
   (rutaRech||[]).forEach(t=>{const k=t.item+'|'+segNormKey(t.puesto);if(!rechMap[k])rechMap[k]=t;});
   const pres=[],desap=[];
@@ -4130,7 +4163,7 @@ function segEspejo(rutaT1,rutaRech,b033,a033,b031,a031){
     if(r){ pres.push({...t,ubic:(r.ubic||t.ubic),lote:((r.lote!==undefined&&r.lote!=='')?r.lote:t.lote)}); }  // criterio 2: ubic del rechequeo
     else desap.push(t);   // criterio 1: desapareció del rechequeo → ejecutada
   });
-  const res=segCruzar(pres,b033,a033,b031,a031);
+  const res=esAjustada?segCruzarCorte(pres,a033,a031):segCruzar(pres,b033,a033,b031,a031);
   desap.forEach(t=>{
     const pas=(t.origen==='ROP'&&t.pasilloROP)?String(t.pasilloROP):segPasAlm(t.ubic);
     res.snap.push({...t,pasSeg:pas,estado:'EJECUTADO',delta33:0,delta31:0,inv31Base:0,inv31Act:0,invPtoAct:0,confirmadoEn:'rechequeo',puestoReal:t.puesto,evidencia:'✅ Ya no aparece en el rechequeo (2ª tanda) → ejecutada'});
@@ -4146,35 +4179,34 @@ async function segEjecutar(){
   // Filtro Con/Sin ROP: excluye las tareas de ROP (R109) del cálculo si está activo
   const ruta=DATA.segSinROP?rutaRaw.filter(r=>!(r.esROP||r.origen==='ROP')):rutaRaw;
   if(!ruta.length)return alert(DATA.segSinROP?'No hay tareas (sin ROP) para rastrear. Prueba "Con ROP".':'No hay ruta para rastrear. Genere un análisis o seleccione un archivo del histórico.');
+  // La ruta AJUSTADA se rastrea SOLO contra el corte (sin depender del R033/R031 base de inicio)
+  const esAjustada=(typeof segSelectedKey==='function'?segSelectedKey():DATA.segRutaKey)==='__ajustada';
   const fA033=FILES.seg033act;
   const tieneBaseTanda=!!(snap&&snap.base&&snap.base.b033);
   const fB033=FILES.seg033base||FILES.r033;
-  if(!tieneBaseTanda&&!fB033)return alert('Falta el R033 base de esta tanda.\n\nSelecciona una ruta generada en esta sesión, o adjunta el R033 base aquí. (Las tandas archivadas guardan su base solo por unos días.)');
+  if(!esAjustada&&!tieneBaseTanda&&!fB033)return alert('Falta el R033 base de esta tanda.\n\nSelecciona una ruta generada en esta sesión, o adjunta el R033 base aquí.');
   if(!fA033)return alert('Adjunte el R033 ACTUAL (corte) para calcular el avance.');
   const btn=document.getElementById('segRunBtn');
   if(btn){btn.disabled=true;btn.textContent='Cruzando...';}
   try{
-    // BASE R033: de la tanda seleccionada (si está guardada) o del R033 cargado
-    let b033;
-    if(tieneBaseTanda){ b033={mapNoLote:snap.base.b033,mapFull:{}}; }
-    else { b033=await segParseR033(fB033); }
     const a033=await segParseR033(fA033);
-    // BASE R031
     const fA031=FILES.seg031act;
-    let b031=null,a031=null;
-    if(fA031){
-      if(tieneBaseTanda&&snap.base.b031){ b031={map:snap.base.b031}; }
-      else { const fB031=FILES.seg031base||FILES.r031; if(fB031)b031=await segParseR031(fB031); }
-      if(b031)a031=await segParseR031(fA031);
-    }
+    let a031=null;
+    if(fA031)a031=await segParseR031(fA031);
+    // BASE R033/R031 (solo se necesita cuando NO es ruta ajustada)
+    async function getBase033(){ return tieneBaseTanda?{mapNoLote:snap.base.b033,mapFull:{}}:await segParseR033(fB033); }
+    async function getBase031(){ if(!fA031)return null; if(tieneBaseTanda&&snap.base.b031)return{map:snap.base.b031}; const fB031=FILES.seg031base||FILES.r031; return fB031?await segParseR031(fB031):null; }
     let res;
     if(DATA.segRutaRech&&DATA.segRutaRech.rows&&DATA.segRutaRech.rows.length){
-      // Espejo: comparar la ruta (1ª) contra el rechequeo (2ª)
+      // Espejo: 1ª ruta ajustada vs rechequeo (2ª)
       let rech=DATA.segRutaRech.rows;
       if(DATA.segSinROP)rech=rech.filter(r=>!(r.esROP||r.origen==='ROP'));
-      res=segEspejo(ruta,rech,b033,a033,b031,a031);
+      const b033=esAjustada?null:await getBase033(), b031=esAjustada?null:await getBase031();
+      res=segEspejo(ruta,rech,a033,a031,esAjustada,b033,b031);
+    }else if(esAjustada){
+      res=segCruzarCorte(ruta,a033,a031);
     }else{
-      res=segCruzar(ruta,b033,a033,b031,a031);
+      res=segCruzar(ruta,await getBase033(),a033,await getBase031(),a031);
     }
     res.baseTanda=tieneBaseTanda;
     if(snap)res.tandaLabel=turnoLabel(snap.turno)+' · '+fFechaES(snap.fecha);
@@ -4307,7 +4339,9 @@ function renderSeguimientoTab(c){
   h+='<div class="seg-slot '+(FILES.seg031act?'ok':'')+'"><div class="sbar" style="background:#418FDE"></div><div class="sinfo"><div class="nm">R031 Actual (corte)</div><div class="js-st '+(FILES.seg031act?'st':'stg')+'">'+(FILES.seg031act?'✓ '+FILES.seg031act.name:'opcional — confirma unidades en puesto')+'</div></div><label class="seg-btn" style="background:#418FDE">Adjuntar<input type="file" accept=".xlsx,.xls" onchange="segPick(\'seg031act\',this)"></label></div>';
   h+='</div>';
 
-  const canRun=rutaOpts.length&&(tandaBase033||FILES.r033||FILES.seg033base);
+  const esAjR=(typeof segSelectedKey==='function'?segSelectedKey():DATA.segRutaKey)==='__ajustada';
+  const canRun=rutaOpts.length&&(esAjR||tandaBase033||FILES.r033||FILES.seg033base);
+  if(esAjR){h+='<div style="margin:2px 0 8px;font-size:11px;color:#6A1B9A;font-weight:600">ℹ️ Ruta ajustada: se rastrea SOLO contra el corte (R033/R031 actual). No usa el R033/R031 base de inicio.</div>';}
   h+='<button class="seg-run" id="segRunBtn" onclick="segEjecutar()"'+(canRun?'':' disabled')+'>📡 Calcular avance</button>';
   h+='<span style="font-size:11px;color:#777;margin-left:12px">Puede volver a adjuntar solo el corte actual y recalcular las veces que necesite.</span>';
   h+='</div>';
