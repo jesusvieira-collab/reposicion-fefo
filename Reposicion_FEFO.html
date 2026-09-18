@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v30 (colaborativo) - Farmatodo</title>
+<title>Reposición Picking FEFO + ROP + Histórico + Seguimiento v31 (colaborativo) - Farmatodo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -300,7 +300,7 @@ th.sortable.desc::after{content:'▼';opacity:1}
 
 <div class="hdr">
   <h1>REPOSICIÓN PICKING — FEFO + DÍAS INVENTARIO</h1>
-  <p>Farmatodo · CENDIS Charallave · v30 — seguimiento: espejo de rechequeo (2ª ruta) · avance por zona · desglose BO/DYM ejec vs faltantes · detal por R031 · filtro Con/Sin ROP · Guardar/Congelar · histórico trimestral</p>
+  <p>Farmatodo · CENDIS Charallave · v31 — seguimiento: tabla por piso (ejec/pend/puestos en 0) · nombres de zona · espejo de rechequeo · avance por zona · BO/DYM ejec vs faltantes · Con/Sin ROP · Guardar/Congelar</p>
 </div>
 
 <div id="uploadSection" class="upload">
@@ -4195,7 +4195,10 @@ function segBars(items,idpfx){
     if(a.ord!=null&&b.ord!=null)return a.ord-b.ord;
     return Number(a.label)-Number(b.label)||String(a.label).localeCompare(String(b.label));
   });
-  const BH=22,ARROW=11,GAP=9,LW=54,IW=430,MW=120,W=LW+IW+ARROW+MW;
+  // Ancho de la etiqueta dinámico según el nombre más largo (para que se vean zonas como "Overstock medicina")
+  const lblTxt=it=>((it.pfx!==undefined?it.pfx:'P')+String(it.label));
+  const maxLen=items.reduce((m,it)=>Math.max(m,lblTxt(it).length),0);
+  const BH=22,ARROW=11,GAP=9,LW=Math.max(54,Math.min(190,maxLen*6.4+14)),IW=430,MW=120,W=LW+IW+ARROW+MW;
   let out='';
   items.forEach((it,i)=>{
     const total=it.ej+it.par+it.pen||1;
@@ -4213,7 +4216,7 @@ function segBars(items,idpfx){
     });
     const mx=LW+IW+ARROW+6,my=BH/2+3.5;
     const meta=`<text x="${mx}" y="${my}" font-size="9" font-weight="700" fill="#0f4a38">${it.ej}</text><text x="${mx+16}" y="${my}" font-size="9" fill="#ccc">/</text><text x="${mx+22}" y="${my}" font-size="9" font-weight="700" fill="#5a3800">${it.par}</text><text x="${mx+40}" y="${my}" font-size="9" fill="#ccc">/</text><text x="${mx+46}" y="${my}" font-size="9" font-weight="700" fill="#5c1010">${it.pen}</text><text x="${mx+64}" y="${my}" font-size="8.5" fill="#7a90a8" font-weight="600">(${total})</text>`;
-    out+=`<svg width="100%" viewBox="0 0 ${W} ${BH}" style="display:block;margin-bottom:${GAP}px;overflow:visible" font-family="Montserrat,Arial,sans-serif"><defs>${defs}</defs><text x="${LW-8}" y="${my}" text-anchor="end" font-size="10.5" font-weight="700" fill="#223344">${it.pfx||'P'}${it.label}</text>${body}${meta}</svg>`;
+    out+=`<svg width="100%" viewBox="0 0 ${W} ${BH}" style="display:block;margin-bottom:${GAP}px;overflow:visible" font-family="Montserrat,Arial,sans-serif"><defs>${defs}</defs><text x="${LW-8}" y="${my}" text-anchor="end" font-size="10.5" font-weight="700" fill="#223344">${it.pfx!==undefined?it.pfx:'P'}${it.label}</text>${body}${meta}</svg>`;
   });
   return out;
 }
@@ -4390,6 +4393,41 @@ function renderSeguimientoTab(c){
     x+=fila('BO',bo,'#757575')+fila('DYM',dy,'#9E9E9E');
     if(sp.n>0)x+=fila('Sin puesto',sp,'#B0BEC5');
     x+='</tbody></table></div>';
+    h+=x;
+  })();
+
+  // ── Tabla por PISO: ejecutadas / pendientes / puestos en 0 ──
+  (function(){
+    const byPiso={};
+    snap.forEach(r=>{
+      const piso=(String(r.zD||'').trim().charAt(0).toUpperCase())||'—';
+      if(!byPiso[piso])byPiso[piso]={piso,ej:0,pen:0,cero:new Set()};
+      const g=byPiso[piso];
+      if(r.estado==='EJECUTADO')g.ej++;else g.pen++;   // pendiente = no ejecutada (incluye parcial)
+      const inv=r.invPtoAct;
+      if(segPuestoValido(r.puesto)&&(inv==null||inv<=0))g.cero.add(String(r.puesto));
+    });
+    const pisos=Object.values(byPiso).sort((a,b)=>a.piso.localeCompare(b.piso));
+    if(!pisos.length)return;
+    let totEj=0,totPen=0,totCero=0;
+    let x='<div class="seg-chartcard" style="margin-top:12px"><h4>🏢 Tareas por piso · puestos en 0</h4>';
+    x+='<table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr style="background:#001E62;color:#fff">'+
+      '<th style="padding:6px 10px;border:1px solid #ccc">Piso</th>'+
+      '<th style="padding:6px 10px;border:1px solid #ccc">✅ Ejecutadas</th>'+
+      '<th style="padding:6px 10px;border:1px solid #ccc">⏳ Pendientes</th>'+
+      '<th style="padding:6px 10px;border:1px solid #ccc">🔴 Puestos en 0</th></tr></thead><tbody>';
+    pisos.forEach((g,i)=>{const c0=g.cero.size;totEj+=g.ej;totPen+=g.pen;totCero+=c0;
+      x+='<tr style="'+(i%2?'background:#fafafa':'')+'">'+
+        '<td style="padding:6px 10px;font-weight:800;border:1px solid #ccc;background:#e8f0fe;color:#0D47A1">Piso '+esc(g.piso)+'</td>'+
+        '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;color:#0f4a38;font-weight:700">'+fN(g.ej)+'</td>'+
+        '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;color:#c00;font-weight:700">'+fN(g.pen)+'</td>'+
+        '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;font-weight:800;color:'+(c0>0?'#cc0000':'#2e7d32')+'">'+fN(c0)+'</td></tr>';
+    });
+    x+='<tr><td style="padding:6px 10px;font-weight:800;border:1px solid #ccc;background:#37474F;color:#fff">TOTAL</td>'+
+      '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;background:#37474F;color:#fff;font-weight:800">'+fN(totEj)+'</td>'+
+      '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;background:#37474F;color:#fff;font-weight:800">'+fN(totPen)+'</td>'+
+      '<td style="padding:6px 10px;text-align:right;border:1px solid #ccc;background:#cc0000;color:#fff;font-weight:800">'+fN(totCero)+'</td></tr>';
+    x+='</tbody></table><div style="font-size:10.5px;color:#888;margin-top:5px">Piso = primera letra de la zona de despacho. "Puestos en 0" = puestos distintos con inventario en cero en el corte'+((DATA.seg&&DATA.seg.modoCompleto)?'':' (adjunta el R031 corte para el dato exacto)')+'.</div></div>';
     h+=x;
   })();
 
